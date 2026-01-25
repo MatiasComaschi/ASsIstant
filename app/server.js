@@ -46,10 +46,9 @@ app.post(
       `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
         companyId
       )}&token=${encodeURIComponent(token)}`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say voice="alice">Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
-
-    res.set("Content-Type", "text/xml");
+    res.set("Content-Type", "text/xml; charset=utf-8");
     res.status(200).send(twiml);
   }
 );
@@ -62,10 +61,9 @@ app.get("/twiml", (req, res) => {
     `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
       companyId
     )}&token=${encodeURIComponent(token)}`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say voice="alice">Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
-
-  res.set("Content-Type", "text/xml");
+  res.set("Content-Type", "text/xml; charset=utf-8");
   res.status(200).send(twiml);
 });
 app.get("/version", (_, res) => {
@@ -175,6 +173,20 @@ function openaiConnect({ instructions }) {
     };
 
     ws.send(JSON.stringify(sessionUpdate));
+
+    // Immediately request the assistant to create an initial audio response
+    const createResp = {
+      type: "response.create",
+      response: {
+        instructions: "Greet the caller naturally and ask what they need.",
+        modalities: ["audio"]
+      }
+    };
+    try {
+      ws.send(JSON.stringify(createResp));
+    } catch (err) {
+      console.error("Failed to send response.create:", err);
+    }
   });
 
   return ws;
@@ -189,6 +201,45 @@ wss.on("connection", async (twilioWs, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const companyId = url.searchParams.get("company_id");
   const token = url.searchParams.get("token");
+
+  // Log Twilio websocket events for debugging
+  twilioWs.on("message", (buf) => {
+    const msg = safeJsonParse(buf.toString());
+    if (!msg) return;
+    console.log("TWILIO MSG:", msg.event || msg.type || null);
+
+    // existing message handling continues below (re-emit by calling handler)
+    handleTwilioMessage(msg);
+  });
+
+  // Move original twilio message handling into a named function so we can call it from logger above
+  function handleTwilioMessage(msg) {
+    if (!msg) return;
+
+    if (msg.event === "start") {
+      streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
+      callSid = msg?.start?.callSid || msg?.start?.callSid || callSid;
+
+      return;
+    }
+
+    if (msg.event === "media") {
+      const payload = msg?.media?.payload;
+      if (!payload || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+
+      const append = {
+        type: "input_audio_buffer.append",
+        audio: payload
+      };
+      openaiWs.send(JSON.stringify(append));
+      return;
+    }
+
+    if (msg.event === "stop") {
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
+    }
+  }
 
   if (!companyId) {
     twilioWs.close(1008, "Missing company_id");
@@ -263,37 +314,7 @@ Start of call:
     return;
   }
 
-  twilioWs.on("message", (buf) => {
-    const msg = safeJsonParse(buf.toString());
-    if (!msg) return;
-
-    if (msg.event === "start") {
-      streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
-      callSid = msg?.start?.callSid || msg?.start?.callSid || callSid;
-
-      // Nothing else needed; OpenAI will greet once it receives audio or based on its instructions.
-      return;
-    }
-
-    if (msg.event === "media") {
-      // Twilio sends base64 μ-law chunks in msg.media.payload :contentReference[oaicite:8]{index=8}
-      const payload = msg?.media?.payload;
-      if (!payload || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-
-      // Append audio to OpenAI input buffer (base64). :contentReference[oaicite:9]{index=9}
-      const append = {
-        type: "input_audio_buffer.append",
-        audio: payload
-      };
-      openaiWs.send(JSON.stringify(append));
-      return;
-    }
-
-    if (msg.event === "stop") {
-      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
-    }
-  });
+  // Note: actual message processing is now handled in the logged handler above
 
   twilioWs.on("close", () => {
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
