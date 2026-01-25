@@ -4,13 +4,11 @@ import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
 import { createClient } from "@supabase/supabase-js";
 
-const {
-  PORT = "3000",
-  OPENAI_API_KEY,
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  VOICE_GATEWAY_TOKEN, // optional but recommended
-} = process.env;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const VOICE_GATEWAY_TOKEN = process.env.VOICE_GATEWAY_TOKEN; // optional but recommended
+const PORT = Number(process.env.PORT || 3000);
 
 if (!OPENAI_API_KEY) console.warn("Warning: Missing OPENAI_API_KEY");
 if (!SUPABASE_URL) console.warn("Warning: Missing SUPABASE_URL");
@@ -37,6 +35,16 @@ app.use((req, res, next) => {
 
 app.get("/", (_, res) => res.status(200).send("ok"));
 app.get("/health", (_, res) => res.status(200).send("ok"));
+app.get("/version", (_, res) => {
+  res.status(200).json({
+    name: "voice-gateway",
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
+    time: new Date().toISOString(),
+  });
+});
+app.get("/twilio", (_, res) => {
+  res.status(426).send("This endpoint is WebSocket-only. Use wss://.../twilio");
+});
 
 process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection:", reason);
@@ -49,7 +57,7 @@ process.on("uncaughtException", (err) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/twilio" });
+const wss = new WebSocketServer({ noServer: true });
 
 function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
@@ -131,6 +139,11 @@ function openaiConnect({ instructions }) {
 }
 
 wss.on("connection", async (twilioWs, req) => {
+  console.log("WS CONNECTED:", req.url);
+  twilioWs.on("close", (code, reason) => {
+    console.log("WS CLOSED:", code, reason?.toString?.() || reason);
+  });
+  twilioWs.on("error", (err) => console.log("WS ERROR:", err));
   const url = new URL(req.url, `http://${req.headers.host}`);
   const companyId = url.searchParams.get("company_id");
   const token = url.searchParams.get("token");
@@ -245,11 +258,44 @@ Start of call:
   });
 });
 
+server.on("upgrade", (req, socket, head) => {
+  console.log("UPGRADE REQ:", req.url, "headers.upgrade=", req.headers.upgrade);
+  try {
+    const { pathname } = new URL(req.url, `http://${req.headers.host}`);
+    if (pathname !== "/twilio") {
+      const body = "Not Found";
+      socket.write(
+        `HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(
+          body
+        )}\r\nConnection: close\r\n\r\n${body}`
+      );
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  } catch (e) {
+    const body = "Bad Request";
+    try {
+      socket.write(
+        `HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(
+          body
+        )}\r\nConnection: close\r\n\r\n${body}`
+      );
+    } catch (err) {
+      // ignore
+    }
+    socket.destroy();
+  }
+});
+
 server.on("error", (err) => {
   console.error("Server error:", err);
 });
 
-server.listen({ port: Number(PORT), host: "::", ipv6Only: false }, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Voice gateway listening on :${PORT}`);
   console.log(`WebSocket path: ws(s)://<host>/twilio?company_id=<uuid>&token=<optional>`);
   console.log("LISTEN_ADDR:", server.address());
