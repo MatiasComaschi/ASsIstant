@@ -35,6 +35,39 @@ app.use((req, res, next) => {
 
 app.get("/", (_, res) => res.status(200).send("ok"));
 app.get("/health", (_, res) => res.status(200).send("ok"));
+app.post(
+  "/twiml",
+  express.urlencoded({ extended: false }),
+  (req, res) => {
+    const companyId = req.query.company_id;
+    const token = req.query.token;
+
+    const wsUrl =
+      `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
+        companyId
+      )}&token=${encodeURIComponent(token)}`;
+
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${wsUrl}" />\n  </Connect>\n</Response>`;
+
+    res.set("Content-Type", "text/xml");
+    res.status(200).send(twiml);
+  }
+);
+
+app.get("/twiml", (req, res) => {
+  const companyId = req.query.company_id;
+  const token = req.query.token;
+
+  const wsUrl =
+    `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
+      companyId
+    )}&token=${encodeURIComponent(token)}`;
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${wsUrl}" />\n  </Connect>\n</Response>`;
+
+  res.set("Content-Type", "text/xml");
+  res.status(200).send(twiml);
+});
 app.get("/version", (_, res) => {
   res.status(200).json({
     name: "voice-gateway",
