@@ -47,7 +47,7 @@ app.post(
         companyId
       )}&token=${encodeURIComponent(token)}`;
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${wsUrl}" />\n  </Connect>\n</Response>`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
 
     res.set("Content-Type", "text/xml");
     res.status(200).send(twiml);
@@ -63,7 +63,7 @@ app.get("/twiml", (req, res) => {
       companyId
     )}&token=${encodeURIComponent(token)}`;
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${wsUrl}" />\n  </Connect>\n</Response>`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
 
   res.set("Content-Type", "text/xml");
   res.status(200).send(twiml);
@@ -94,6 +94,15 @@ const wss = new WebSocketServer({ noServer: true });
 
 function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
+}
+
+function xmlEscapeAttr(s) {
+  if (s === undefined || s === null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 async function loadCompanyContext(companyId) {
