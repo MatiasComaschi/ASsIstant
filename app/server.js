@@ -40,10 +40,14 @@ app.post(
   express.urlencoded({ extended: false }),
   (req, res) => {
     const companyId = req.query.company_id || process.env.DEFAULT_COMPANY_ID;
-    const token = req.query.token || process.env.VOICE_GATEWAY_TOKEN || "";
+    const token = req.query.token || process.env.VOICE_GATEWAY_TOKEN;
+
+    console.log("TWIML_DEBUG query=", req.query);
+    console.log("TWIML_DEBUG DEFAULT_COMPANY_ID=", process.env.DEFAULT_COMPANY_ID);
+    console.log("TWIML_DEBUG companyId=", companyId, "tokenPresent=", !!token);
 
     if (!companyId) {
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say voice="alice">This number is not configured yet.</Say>\n</Response>`;
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>This number is not configured yet.</Say>\n</Response>`;
       res.set("Content-Type", "text/xml; charset=utf-8");
       res.status(200).send(twiml);
       return;
@@ -54,7 +58,7 @@ app.post(
         companyId
       )}&token=${encodeURIComponent(token)}`;
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say voice="alice">Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
 
     res.set("Content-Type", "text/xml; charset=utf-8");
     res.status(200).send(twiml);
@@ -63,10 +67,14 @@ app.post(
 
 app.get("/twiml", (req, res) => {
   const companyId = req.query.company_id || process.env.DEFAULT_COMPANY_ID;
-  const token = req.query.token || process.env.VOICE_GATEWAY_TOKEN || "";
+  const token = req.query.token || process.env.VOICE_GATEWAY_TOKEN;
+
+  console.log("TWIML_DEBUG query=", req.query);
+  console.log("TWIML_DEBUG DEFAULT_COMPANY_ID=", process.env.DEFAULT_COMPANY_ID);
+  console.log("TWIML_DEBUG companyId=", companyId, "tokenPresent=", !!token);
 
   if (!companyId) {
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say voice="alice">This number is not configured yet.</Say>\n</Response>`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>This number is not configured yet.</Say>\n</Response>`;
     res.set("Content-Type", "text/xml; charset=utf-8");
     res.status(200).send(twiml);
     return;
@@ -76,7 +84,7 @@ app.get("/twiml", (req, res) => {
     `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
       companyId
     )}&token=${encodeURIComponent(token)}`;
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say voice="alice">Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
 
   res.set("Content-Type", "text/xml; charset=utf-8");
   res.status(200).send(twiml);
