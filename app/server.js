@@ -219,6 +219,9 @@ function openaiConnect({ instructions }) {
 
 wss.on("connection", async (twilioWs, req) => {
   console.log("WS CONNECTED:", req.url);
+  let streamSid = null;
+  let callSid = null;
+  let openaiWs = null;
   twilioWs.on("close", (code, reason) => {
     console.log("WS CLOSED:", code, reason?.toString?.() || reason);
   });
@@ -229,12 +232,16 @@ wss.on("connection", async (twilioWs, req) => {
 
   // Log Twilio websocket events for debugging
   twilioWs.on("message", (buf) => {
-    const msg = safeJsonParse(buf.toString());
-    if (!msg) return;
-    console.log("TWILIO MSG:", msg.event || msg.type || null);
+    try {
+      const msg = safeJsonParse(buf.toString());
+      if (!msg) return;
+      console.log("TWILIO MSG:", msg.event || msg.type || null);
 
-    // existing message handling continues below (re-emit by calling handler)
-    handleTwilioMessage(msg);
+      // existing message handling continues below (re-emit by calling handler)
+      handleTwilioMessage(msg);
+    } catch (e) {
+      console.error("TWILIO_HANDLER_ERR", e);
+    }
   });
 
   // Move original twilio message handling into a named function so we can call it from logger above
@@ -242,10 +249,11 @@ wss.on("connection", async (twilioWs, req) => {
     if (!msg) return;
 
     if (msg.event === "start") {
+      // set stream and call ids from the Twilio start event
       streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
-      callSid = msg?.start?.callSid || msg?.start?.callSid || callSid;
+      callSid = msg?.start?.callSid || msg?.callSid || callSid;
 
-      console.log("TWILIO EVENT: start", { streamSid, callSid });
+      console.log("TWILIO start streamSid=", streamSid, "callSid=", callSid);
       // Prompt OpenAI to greet immediately when call starts
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         try {
@@ -294,10 +302,6 @@ wss.on("connection", async (twilioWs, req) => {
     return;
   }
 
-  let streamSid = null;
-  let callSid = null;
-  let openaiWs = null;
-
   try {
     const ctx = await loadCompanyContext(companyId);
 
@@ -341,7 +345,7 @@ Start of call:
         };
         try {
           twilioWs.send(JSON.stringify(twilioOut));
-          console.log("TWILIO OUT: media", { streamSid, size: audioB64.length });
+          console.log("OPENAI->TWILIO audio bytes=", audioB64.length, "streamSid=", streamSid);
         } catch (err) {
           console.error("Failed to send media to Twilio:", err);
         }
