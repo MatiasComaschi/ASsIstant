@@ -23,7 +23,15 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 const app = express();
 
 app.use((req, res, next) => {
-  console.log("HTTP IN:", req.method, req.url);
+  console.log(
+    "HTTP IN:",
+    req.method,
+    req.url,
+    "host=",
+    req.headers.host,
+    "ip=",
+    req.socket?.remoteAddress
+  );
   next();
 });
 
@@ -237,9 +245,14 @@ Start of call:
   });
 });
 
-server.listen(Number(PORT), () => {
+server.on("error", (err) => {
+  console.error("Server error:", err);
+});
+
+server.listen({ port: Number(PORT), host: "::", ipv6Only: false }, () => {
   console.log(`Voice gateway listening on :${PORT}`);
   console.log(`WebSocket path: ws(s)://<host>/twilio?company_id=<uuid>&token=<optional>`);
+  console.log("LISTEN_ADDR:", server.address());
 
   (async () => {
     try {
