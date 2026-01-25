@@ -21,6 +21,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 });
 
 const app = express();
+
+app.use((req, res, next) => {
+  console.log("HTTP IN:", req.method, req.url);
+  next();
+});
+
+app.get("/", (_, res) => res.status(200).send("ok"));
 app.get("/health", (_, res) => res.status(200).send("ok"));
 
 const server = http.createServer(app);
