@@ -53,12 +53,9 @@ app.post(
       return;
     }
 
-    const wsUrl =
-      `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
-        companyId
-      )}&token=${encodeURIComponent(token)}`;
+    const wsUrl = `wss://${req.headers.host}/twilio`;
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000"/>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000">\n      <Parameter name="company_id" value="${xmlEscapeAttr(companyId)}"/>\n      <Parameter name="token" value="${xmlEscapeAttr(token)}"/>\n    </Stream>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
 
     res.set("Content-Type", "text/xml; charset=utf-8");
     res.status(200).send(twiml);
@@ -80,11 +77,8 @@ app.get("/twiml", (req, res) => {
     return;
   }
 
-  const wsUrl =
-    `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
-      companyId
-    )}&token=${encodeURIComponent(token)}`;
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000"/>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
+  const wsUrl = `wss://${req.headers.host}/twilio`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000">\n      <Parameter name="company_id" value="${xmlEscapeAttr(companyId)}"/>\n      <Parameter name="token" value="${xmlEscapeAttr(token)}"/>\n    </Stream>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
 
   res.set("Content-Type", "text/xml; charset=utf-8");
   res.status(200).send(twiml);
@@ -227,8 +221,8 @@ wss.on("connection", async (twilioWs, req) => {
   });
   twilioWs.on("error", (err) => console.log("WS ERROR:", err));
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const companyId = url.searchParams.get("company_id");
-  const token = url.searchParams.get("token");
+  let companyId = url.searchParams.get("company_id");
+  let token = url.searchParams.get("token");
 
   // Log Twilio websocket events for debugging
   twilioWs.on("message", (buf) => {
@@ -252,8 +246,28 @@ wss.on("connection", async (twilioWs, req) => {
       // set stream and call ids from the Twilio start event
       streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
       callSid = msg?.start?.callSid || msg?.callSid || callSid;
-
       console.log("TWILIO start streamSid=", streamSid, "callSid=", callSid);
+      console.log("TWILIO start customParameters=", msg?.start?.customParameters);
+
+      // Extract customParameters, prefer start values if URL query params were missing
+      const cp = msg?.start?.customParameters || {};
+      const cid = cp.company_id || cp.companyId;
+      const tkn = cp.token;
+      companyId = companyId || cid;
+      token = token || tkn;
+
+      console.log("TWILIO start companyId=", companyId, "tokenPresent=", !!token);
+
+      // Validate token if VOICE_GATEWAY_TOKEN is set
+      if (VOICE_GATEWAY_TOKEN && token !== VOICE_GATEWAY_TOKEN) {
+        twilioWs.close(1008, "Bad token");
+        return;
+      }
+
+      if (!companyId) {
+        twilioWs.close(1008, "Missing company_id");
+        return;
+      }
       // Prompt OpenAI to greet immediately when call starts
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         try {
@@ -291,16 +305,7 @@ wss.on("connection", async (twilioWs, req) => {
     }
   }
 
-  if (!companyId) {
-    twilioWs.close(1008, "Missing company_id");
-    return;
-  }
-
-  // Optional shared token to prevent random connections
-  if (VOICE_GATEWAY_TOKEN && token !== VOICE_GATEWAY_TOKEN) {
-    twilioWs.close(1008, "Bad token");
-    return;
-  }
+  // Allow connection even if query params are absent; we'll validate after 'start' event
 
   try {
     const ctx = await loadCompanyContext(companyId);
