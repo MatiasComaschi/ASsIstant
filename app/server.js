@@ -30,6 +30,16 @@ app.use((req, res, next) => {
 app.get("/", (_, res) => res.status(200).send("ok"));
 app.get("/health", (_, res) => res.status(200).send("ok"));
 
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
+  // Optional: exit so process manager can restart the app
+  process.exit(1);
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/twilio" });
 
@@ -227,7 +237,16 @@ Start of call:
   });
 });
 
-server.listen(Number(PORT), "0.0.0.0", () => {
+server.listen(Number(PORT), () => {
   console.log(`Voice gateway listening on :${PORT}`);
   console.log(`WebSocket path: ws(s)://<host>/twilio?company_id=<uuid>&token=<optional>`);
+
+  (async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/health`);
+      console.log("SELF_CHECK /health", res.status);
+    } catch (err) {
+      console.error("SELF_CHECK /health failed:", err);
+    }
+  })();
 });
