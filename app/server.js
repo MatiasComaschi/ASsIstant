@@ -58,7 +58,7 @@ app.post(
         companyId
       )}&token=${encodeURIComponent(token)}`;
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000"/>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
 
     res.set("Content-Type", "text/xml; charset=utf-8");
     res.status(200).send(twiml);
@@ -84,7 +84,7 @@ app.get("/twiml", (req, res) => {
     `wss://${req.headers.host}/twilio?company_id=${encodeURIComponent(
       companyId
     )}&token=${encodeURIComponent(token)}`;
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" />\n  </Connect>\n</Response>`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000"/>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
 
   res.set("Content-Type", "text/xml; charset=utf-8");
   res.status(200).send(twiml);
@@ -173,6 +173,8 @@ function openaiConnect({ instructions }) {
     const sessionUpdate = {
       type: "session.update",
       session: {
+        input_audio_format: "g711_ulaw",
+        output_audio_format: "g711_ulaw",
         type: "realtime",
         model: "gpt-realtime",
         output_modalities: ["audio"],
@@ -243,18 +245,35 @@ wss.on("connection", async (twilioWs, req) => {
       streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
       callSid = msg?.start?.callSid || msg?.start?.callSid || callSid;
 
+      console.log("TWILIO EVENT: start", { streamSid, callSid });
+      // Prompt OpenAI to greet immediately when call starts
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+        try {
+          const greet = { type: "response.create", response: { instructions: "Greet the caller naturally and ask what they need.", modalities: ["audio"] } };
+          openaiWs.send(JSON.stringify(greet));
+          console.log("Sent response.create to OpenAI on start");
+        } catch (err) {
+          console.error("Error sending response.create on start:", err);
+        }
+      }
+
       return;
     }
 
     if (msg.event === "media") {
       const payload = msg?.media?.payload;
+      console.log("TWILIO EVENT: media chunk", { streamSid, len: payload?.length || 0 });
       if (!payload || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
 
       const append = {
         type: "input_audio_buffer.append",
         audio: payload
       };
-      openaiWs.send(JSON.stringify(append));
+      try {
+        openaiWs.send(JSON.stringify(append));
+      } catch (err) {
+        console.error("Failed to forward media to OpenAI:", err);
+      }
       return;
     }
 
@@ -303,6 +322,8 @@ Start of call:
     openaiWs.on("message", (buf) => {
       const msg = safeJsonParse(buf.toString());
       if (!msg) return;
+      // Log OpenAI event type for debugging
+      console.log("OPENAI MSG:", msg.type || msg);
 
       // The exact event names can vary by model version; we handle common patterns:
       // If an event contains base64 audio for output, forward it to Twilio as a media event.
@@ -318,11 +339,13 @@ Start of call:
           streamSid,
           media: { payload: audioB64 }
         };
-        twilioWs.send(JSON.stringify(twilioOut));
+        try {
+          twilioWs.send(JSON.stringify(twilioOut));
+          console.log("TWILIO OUT: media", { streamSid, size: audioB64.length });
+        } catch (err) {
+          console.error("Failed to send media to Twilio:", err);
+        }
       }
-
-      // Optional: log events for debugging
-      // console.log("OpenAI event:", msg.type || msg);
     });
 
     openaiWs.on("close", () => {
