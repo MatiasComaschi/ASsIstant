@@ -142,10 +142,22 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
         sendToOpenAI(ws, { type: "response.create" });
       }
     }
+    if (evt.type === "response.created" || evt.type === "response.done") {
+      logAI("RESPONSE EVENT:", evt.type);
+    }
+
+    const audioDelta =
+      evt?.delta?.audio ||
+      evt?.audio?.data ||
+      evt?.output_audio?.data ||
+      evt?.response?.audio?.data ||
+      evt?.delta ||
+      null;
+
     if (evt.type === "response.audio.delta" || evt.type === "response.output_audio.delta") {
-      if (evt.delta) {
-        logAI("AUDIO DELTA", `len=${evt.delta.length}`);
-        onAudioDelta?.(evt.delta);
+      if (audioDelta) {
+        logAI("AUDIO DELTA", `len=${audioDelta.length}`);
+        onAudioDelta?.(audioDelta);
       }
     }
     if (evt.type === "response.done") {
