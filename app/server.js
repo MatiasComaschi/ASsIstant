@@ -80,8 +80,10 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
 
   function buildSessionUpdate() {
     const audio = {
-      input_audio_format: "audio/pcmu",
-      output_audio_format: "audio/pcmu"
+      audio: {
+        input: { format: { type: "audio/pcmu" } },
+        output: { format: { type: "audio/pcmu" } }
+      }
     };
     const session = sessionTypeMode === "with"
       ? { type: "realtime", instructions: instructions, ...audio }
