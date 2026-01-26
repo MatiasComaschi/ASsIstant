@@ -154,16 +154,17 @@ async function loadCompanyContext(companyId) {
   };
 }
 
-function openaiConnect({ instructions }) {
-  // Official docs: wss://api.openai.com/v1/realtime?model=gpt-realtime :contentReference[oaicite:6]{index=6}
+function openaiConnect({ instructions, onReady } = {}) {
+  // Official docs: wss://api.openai.com/v1/realtime?model=gpt-realtime
   const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
   const ws = new WebSocket(url, {
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
   });
 
   ws.on("open", () => {
+    console.log("OPENAI WS OPEN");
+
     // Configure session for telephony μ-law audio and server-side VAD auto-response.
-    // OpenAI supports PCMU (G.711 μ-law) format and turn_detection with create_response. :contentReference[oaicite:7]{index=7}
     const sessionUpdate = {
       type: "session.update",
       session: {
@@ -179,22 +180,39 @@ function openaiConnect({ instructions }) {
             turn_detection: {
               type: "server_vad",
               create_response: true,
-              silence_duration_ms: 600
-            }
+              silence_duration_ms: 600,
+            },
           },
           output: {
             format: { type: "audio/pcmu" },
-            // voice can be changed later; keep default unless you’ve chosen one
-            voice: "marin"
-          }
-        }
-      }
+            voice: "marin",
+          },
+        },
+      },
     };
 
-    ws.send(JSON.stringify(sessionUpdate));
-
-    // Note: Do not create an immediate response here; caller code may request it after
+    try {
+      ws.send(JSON.stringify(sessionUpdate));
+      // Force model to speak first immediately after session.update
+      const greet = {
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "Start with a warm, natural greeting and ask what they need.",
+        },
+      };
+      ws.send(JSON.stringify(greet));
+      console.log("OPENAI: session.update and initial response.create sent");
+      if (typeof onReady === "function") {
+        try { onReady(); } catch (e) { console.error("onReady callback failed:", e); }
+      }
+    } catch (e) {
+      console.log("OPENAI WS ERROR sending session/update:", e?.message || e);
+    }
   });
+
+  ws.on("error", (e) => console.log("OPENAI WS ERROR", e?.message || e));
+  ws.on("close", (c, r) => console.log("OPENAI WS CLOSE", c, r?.toString?.() || r));
 
   return ws;
 }
@@ -249,40 +267,37 @@ wss.on("connection", async (twilioWs, req) => {
 
     const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base (use only if relevant; keep answers short and human):\n${ctx.kbText}\n\nPhone style:\n- Sound natural and warm, like a real receptionist.\n- Short answers, ask one question at a time.\n- If the caller asks \"how are you\", respond like a human.\n- If unsure, ask a clarifying question or offer to transfer to a person.\n\nStart of call:\n- Greet the caller naturally and ask what they need.`.trim();
 
-    // Connect to OpenAI
-    openaiWs = openaiConnect({ instructions });
-
-    // Add debugging logs
-    openaiWs.on("open", () => {
-      console.log("OPENAI WS OPEN");
-      // mark ready and flush buffered audio
-      ready = true;
-      console.log("FLUSH BUFFERED_FRAMES=", audioBuffer.length);
-      while (audioBuffer.length && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-        const payload = audioBuffer.shift();
-        try { openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload })); } catch (e) { console.error("Failed to flush buffered audio:", e); }
-      }
-
-      // trigger an initial greeting from the assistant
-      try {
-        const greet = { type: "response.create", response: { instructions: "Start the call with a short natural greeting and ask what they need.", modalities: ["audio"] } };
-        openaiWs.send(JSON.stringify(greet));
-        console.log("Sent response.create to OpenAI after open");
-      } catch (err) {
-        console.error("Error sending response.create on open:", err);
+    // Connect to OpenAI and set onReady to flip `ready` only after session.update+response.create are sent
+    openaiWs = openaiConnect({
+      instructions,
+      onReady: () => {
+        // This runs after openaiConnect sent session.update and the initial response.create
+        ready = true;
+        console.log("READY=TRUE");
+        console.log("FLUSHING BUFFER", audioBuffer.length);
+        while (audioBuffer.length && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+          const payload = audioBuffer.shift();
+          try { openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload })); } catch (e) { console.error("Failed to flush buffered audio:", e); }
+        }
       }
     });
 
-    openaiWs.on("error", (err) => console.log("OPENAI WS ERROR", err));
+    // If OpenAI never opens within 3s after init, log a timeout for debugging
+    setTimeout(() => { if (!ready) console.log("OPENAI TIMEOUT (not open after 3s)"); }, 3000);
+
+    // Attach close handler to ensure Twilio websocket is closed if OpenAI closes
     openaiWs.on("close", (code, reason) => {
       console.log("OPENAI WS CLOSE", code, reason?.toString?.());
       if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
     });
 
-    // Handle incoming OpenAI realtime messages (audio deltas)
+    // Handle incoming OpenAI realtime messages (audio deltas) and log message types
     openaiWs.on("message", (buf) => {
       const msg = safeJsonParse(buf.toString());
       if (!msg) return;
+      console.log("OPENAI MSG TYPE:", msg?.type);
+      if (msg?.type === "error") console.log("OPENAI ERROR PAYLOAD:", msg);
+
       // Prioritize the response.output_audio.delta event
       if (msg.type === "response.output_audio.delta" && msg.delta) {
         const audioB64 = msg.delta;
@@ -361,7 +376,10 @@ wss.on("connection", async (twilioWs, req) => {
       if (!ready) {
         // buffer up to 200 frames, drop oldest when exceeding
         audioBuffer.push(payload);
-        if (audioBuffer.length > 200) audioBuffer.shift();
+        if (audioBuffer.length > 200) {
+          audioBuffer.shift();
+          console.log("BUFFER DROP");
+        }
         console.log("BUFFERED_FRAMES=", audioBuffer.length);
         return;
       }
