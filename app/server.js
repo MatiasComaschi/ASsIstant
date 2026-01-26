@@ -332,8 +332,12 @@ wss.on("connection", async (twilioWs, req) => {
           if (msg.type === "response.output_audio.delta" && msg.delta) {
             const audioB64 = msg.delta;
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-              try { twilioWs.send(JSON.stringify(twilioOut)); logAI("OUT AUDIO len=", msg.delta?.length || audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+              try {
+                twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
+                logTW("SENT AUDIO len=", audioB64.length);
+              } catch (err) {
+                console.error("Failed to send media to Twilio:", err);
+              }
             }
             return;
           }
