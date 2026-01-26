@@ -68,7 +68,10 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
   const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
   const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` };
   console.log("🧠 OPENAI | CONNECTING TO:", url);
-  console.log("🧠 OPENAI | HEADERS:", headers);
+  if (headers.Authorization) {
+    const masked = `${headers.Authorization.slice(0, 10)}…${headers.Authorization.slice(-6)}`;
+    console.log("🧠 OPENAI | HEADERS:", { Authorization: masked });
+  }
   const ws = new WebSocket(url, "realtime", { headers });
   ws._ready = false;
   ws._activeResponse = false;
@@ -76,9 +79,13 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
   let sessionUpdateAttempts = 0;
 
   function buildSessionUpdate() {
+    const audio = {
+      input_audio_format: "audio/pcmu",
+      output_audio_format: "audio/pcmu"
+    };
     const session = sessionTypeMode === "with"
-      ? { type: "realtime", instructions: instructions }
-      : { instructions: instructions };
+      ? { type: "realtime", instructions: instructions, ...audio }
+      : { instructions: instructions, ...audio };
     return { type: "session.update", session };
   }
 
