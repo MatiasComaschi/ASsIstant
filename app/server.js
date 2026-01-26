@@ -26,6 +26,15 @@ function logTW(...args) { console.log("📞 TWILIO |", ...args); }
 
 function safeJsonParse(s) { try { return JSON.parse(s); } catch { return null; } }
 
+function xmlEscapeAttr(s) {
+  if (s === undefined || s === null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 async function loadCompanyContext(companyId) {
   const { data: profile } = await supabase
     .from("ai_profiles")
@@ -126,6 +135,26 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
 }
 
 app.get("/health", (_, res) => res.status(200).send("ok"));
+
+app.post("/twiml", express.urlencoded({ extended: false }), (req, res) => {
+  const companyId = req.query.company_id || process.env.DEFAULT_COMPANY_ID;
+  const token = req.query.token || process.env.VOICE_GATEWAY_TOKEN;
+
+  if (!companyId) {
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>This number is not configured yet.</Say>\n</Response>`;
+    res.set("Content-Type", "text/xml; charset=utf-8");
+    res.status(200).send(twiml);
+    return;
+  }
+
+  const wsUrl = `wss://${req.headers.host}/twilio`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000">\n      <Parameter name="company_id" value="${xmlEscapeAttr(companyId)}"/>\n      <Parameter name="token" value="${xmlEscapeAttr(token)}"/>\n    </Stream>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
+
+  res.set("Content-Type", "text/xml; charset=utf-8");
+  res.status(200).send(twiml);
+});
+
+app.get("/twilio", (_, res) => res.status(426).send("This endpoint is WebSocket-only. Use wss://.../twilio"));
 
 server.on("upgrade", (req, socket, head) => {
   try {
