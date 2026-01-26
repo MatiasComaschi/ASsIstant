@@ -111,7 +111,13 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
       ws._ready = true;
       if (!greetingSent) {
         greetingSent = true;
-        sendToOpenAI(ws, { type: "response.create" });
+        sendToOpenAI(ws, {
+          type: "response.create",
+          response: {
+            modalities: ["audio"],
+            instructions: "Greet the caller politely and ask how you can help."
+          }
+        });
       }
       onReady?.();
     }
@@ -137,7 +143,10 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
       }
     }
     if (evt.type === "response.audio.delta" || evt.type === "response.output_audio.delta") {
-      if (evt.delta) onAudioDelta?.(evt.delta);
+      if (evt.delta) {
+        logAI("AUDIO DELTA", `len=${evt.delta.length}`);
+        onAudioDelta?.(evt.delta);
+      }
     }
     if (evt.type === "response.done") {
       ws._activeResponse = false;
