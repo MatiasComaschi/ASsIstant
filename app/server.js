@@ -20,6 +20,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 const app = express();
 
+const logAI = (...args) => console.log("🧠 OPENAI |", ...args);
+const logTW = (...args) => console.log("📞 TWILIO |", ...args);
+
 app.use((req, res, next) => {
   console.log(
     "HTTP IN:",
@@ -161,7 +164,7 @@ function openaiConnect({ instructions, onReady } = {}) {
   });
 
   ws.on("open", () => {
-    console.log("OPENAI WS OPEN");
+    logAI("WS OPEN");
 
     const sessionUpdate = {
       type: "session.update",
@@ -181,17 +184,17 @@ function openaiConnect({ instructions, onReady } = {}) {
       ws.send(JSON.stringify(sessionUpdate));
       const create = { type: "response.create" };
       ws.send(JSON.stringify(create));
-      console.log("OPENAI: session.update and response.create sent");
+      logAI("session.update and response.create sent");
       if (typeof onReady === "function") {
         try { onReady(); } catch (e) { console.error("onReady callback failed:", e); }
       }
     } catch (e) {
-      console.log("OPENAI WS ERROR sending session/update:", e?.message || e);
+      logAI("WS ERROR sending session/update:", e?.message || e);
     }
   });
 
-  ws.on("error", (e) => console.log("OPENAI WS ERROR", e?.message || e));
-  ws.on("close", (c, r) => console.log("OPENAI WS CLOSE", c, r?.toString?.() || r));
+  ws.on("error", (e) => logAI("WS ERROR", e?.message || e));
+  ws.on("close", (c, r) => logAI("WS CLOSE", c, r?.toString?.() || r));
 
   return ws;
 }
@@ -220,7 +223,7 @@ wss.on("connection", async (twilioWs, req) => {
     try {
       const msg = safeJsonParse(buf.toString());
       if (!msg) return;
-      console.log("TWILIO MSG:", msg.event || msg.type || null);
+      logTW("MSG:", msg.event || msg.type || null);
 
       // call async handler and catch errors to avoid crashing
       (async () => {
@@ -243,8 +246,8 @@ wss.on("connection", async (twilioWs, req) => {
         // set stream and call ids from the Twilio start event
         streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
         callSid = msg?.start?.callSid || msg?.callSid || callSid;
-        console.log("TWILIO start streamSid=", streamSid, "callSid=", callSid);
-        console.log("TWILIO start customParameters=", msg?.start?.customParameters);
+        logTW("start streamSid=", streamSid, "callSid=", callSid);
+        logTW("start customParameters=", msg?.start?.customParameters);
 
         // Extract customParameters provided by Twilio
         const params = msg?.start?.customParameters || {};
@@ -286,8 +289,8 @@ wss.on("connection", async (twilioWs, req) => {
           instructions,
           onReady: () => {
             ready = true;
-            console.log("READY=TRUE");
-            console.log("FLUSHING BUFFER", audioBuffer.length);
+            logAI("READY=TRUE");
+            logAI("FLUSHING BUFFER", audioBuffer.length);
             while (audioBuffer.length && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
               const payload = audioBuffer.shift();
               try { openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload })); } catch (e) { console.error("Failed to flush buffered audio:", e); }
@@ -296,11 +299,11 @@ wss.on("connection", async (twilioWs, req) => {
         });
 
         // If OpenAI never opens within 3s after init, log a timeout for debugging
-        setTimeout(() => { if (!ready) console.log("OPENAI TIMEOUT (not open after 3s)"); }, 3000);
+        setTimeout(() => { if (!ready) logAI("OPENAI TIMEOUT (not open after 3s)"); }, 3000);
 
         // Ensure Twilio closes if OpenAI closes
         openaiWs.on("close", (code, reason) => {
-          console.log("OPENAI WS CLOSE", code, reason?.toString?.());
+          logAI("WS CLOSE", code, reason?.toString?.());
           if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
         });
 
@@ -308,15 +311,29 @@ wss.on("connection", async (twilioWs, req) => {
         openaiWs.on("message", (buf) => {
           const msg = safeJsonParse(buf.toString());
           if (!msg) return;
-          console.log("OPENAI MSG TYPE:", msg?.type);
-          if (msg?.type === "error") console.log("OPENAI ERROR PAYLOAD:", msg);
+          logAI("MSG TYPE:", msg?.type);
+          if (msg?.type === "error") logAI("ERROR PAYLOAD:", msg);
+
+          // Temporary speech test: when session is created, ask assistant to say a short phrase
+          if (msg.type === "session.created") {
+            try {
+              const test = {
+                type: "response.create",
+                response: { instructions: "Say: Hello. The voice system is working." }
+              };
+              openaiWs.send(JSON.stringify(test));
+              logAI("Sent speech test response.create");
+            } catch (e) {
+              logAI("Failed to send speech test:", e?.message || e);
+            }
+          }
 
           // handle audio deltas in several possible fields
           if (msg.type === "response.output_audio.delta" && msg.delta) {
             const audioB64 = msg.delta;
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-              try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio delta len=", msg.delta?.length || audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+              try { twilioWs.send(JSON.stringify(twilioOut)); logAI("OUT AUDIO len=", msg.delta?.length || audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
             }
             return;
           }
@@ -324,7 +341,7 @@ wss.on("connection", async (twilioWs, req) => {
           const audioB64 = msg?.delta?.audio || msg?.response?.audio?.delta || msg?.audio?.delta || msg?.output_audio?.delta || msg?.audio?.data || msg?.delta || msg?.response?.audio?.data || msg?.output_audio?.data;
           if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
             const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-            try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio delta len=", audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+            try { twilioWs.send(JSON.stringify(twilioOut)); logAI("OUT AUDIO len=", audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
           }
 
         });
@@ -334,16 +351,16 @@ wss.on("connection", async (twilioWs, req) => {
 
     if (msg.event === "media") {
       const payload = msg?.media?.payload;
-      console.log("TWILIO EVENT: media chunk", { streamSid, len: payload?.length || 0 });
+      logTW("EVENT: media chunk", { streamSid, len: payload?.length || 0 });
       if (!payload) return;
       if (!ready) {
         // buffer up to 200 frames, drop oldest when exceeding
         audioBuffer.push(payload);
         if (audioBuffer.length > 200) {
           audioBuffer.shift();
-          console.log("BUFFER DROP");
+          logTW("BUFFER DROP");
         }
-        console.log("BUFFERED_FRAMES=", audioBuffer.length);
+        logTW("BUFFERED_FRAMES=", audioBuffer.length);
         return;
       }
 
