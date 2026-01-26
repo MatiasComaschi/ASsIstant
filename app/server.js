@@ -170,9 +170,15 @@ function openaiConnect({ instructions, onReady } = {}) {
       type: "session.update",
       session: {
         instructions,
-        voice: "marin",
+        // Request audio output at the session level
+        output_modalities: ["audio"],
+        audio: {
+          output: {
+            voice: "marin",
+            format: "g711_ulaw"
+          }
+        },
         input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
         turn_detection: {
           type: "server_vad",
           silence_duration_ms: 600
@@ -263,8 +269,11 @@ wss.on("connection", async (twilioWs, req) => {
           return;
         }
 
+        // If Twilio did not include company_id in the initial WS URL, it should provide it
+        // in the start.customParameters. If it's missing here, do not force-close the socket;
+        // simply log and wait (caller may reconnect or provide parameters).
         if (!startCompanyId) {
-          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1008, "Missing company_id");
+          console.log("START missing company_id; waiting for parameters in start.customParameters");
           return;
         }
 
@@ -307,6 +316,9 @@ wss.on("connection", async (twilioWs, req) => {
           if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
         });
 
+        // a small counter to throttle SENT -> TWILIO logs
+        let sentAudioChunks = 0;
+
         // Log message types and forward audio to Twilio
         openaiWs.on("message", (buf) => {
           const msg = safeJsonParse(buf.toString());
@@ -325,13 +337,15 @@ wss.on("connection", async (twilioWs, req) => {
             }
           }
 
-          // handle audio deltas in several possible fields
+          // Primary: handle OpenAI realtime audio deltas
           if (msg.type === "response.output_audio.delta" && msg.delta) {
             const audioB64 = msg.delta;
+            logAI("GOT response.output_audio.delta len=", audioB64?.length || 0, "streamSid=", streamSid);
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               try {
                 twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
-                logTW("SENT AUDIO len=", audioB64.length);
+                sentAudioChunks++;
+                if (sentAudioChunks % 50 === 0) logTW("SENT -> TWILIO media count=", sentAudioChunks, "streamSid=", streamSid);
               } catch (err) {
                 console.error("Failed to send media to Twilio:", err);
               }
@@ -339,10 +353,21 @@ wss.on("connection", async (twilioWs, req) => {
             return;
           }
 
+          if (msg.type === "response.output_audio.done") {
+            logAI("response.output_audio.done streamSid=", streamSid);
+            return;
+          }
+
+          // Fallback: handle other possible audio fields conservatively
           const audioB64 = msg?.delta?.audio || msg?.response?.audio?.delta || msg?.audio?.delta || msg?.output_audio?.delta || msg?.audio?.data || msg?.delta || msg?.response?.audio?.data || msg?.output_audio?.data;
           if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-            const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-            try { twilioWs.send(JSON.stringify(twilioOut)); logAI("OUT AUDIO len=", audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+            try {
+              twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
+              sentAudioChunks++;
+              if (sentAudioChunks % 50 === 0) logTW("SENT -> TWILIO media count=", sentAudioChunks, "streamSid=", streamSid);
+            } catch (err) {
+              console.error("Failed to send media to Twilio:", err);
+            }
           }
 
         });
