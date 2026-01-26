@@ -172,8 +172,8 @@ function openaiConnect({ instructions, onReady } = {}) {
     const sessionUpdate = {
       type: "session.update",
       session: {
+        type: "realtime",
         instructions,
-        modalities: ["audio", "text"],
         voice: "marin",
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
