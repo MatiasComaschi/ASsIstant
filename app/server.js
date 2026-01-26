@@ -163,37 +163,23 @@ function openaiConnect({ instructions, onReady } = {}) {
   ws.on("open", () => {
     console.log("OPENAI WS OPEN");
 
-    // Realtime session configuration matching OpenAI Realtime schema
     const sessionUpdate = {
       type: "session.update",
       session: {
-        // keep it simple and correct
         instructions,
-        output_modalities: ["audio"],
-        audio: {
-          input: {
-            format: { type: "audio/pcmu" },
-            turn_detection: {
-              type: "server_vad",
-              create_response: true,
-              silence_duration_ms: 600,
-            },
-          },
-          output: { format: { type: "audio/pcmu" }, voice: "marin" },
-        },
-      },
+        voice: "marin",
+        input_audio_format: "g711_ulaw",
+        output_audio_format: "g711_ulaw",
+        turn_detection: {
+          type: "server_vad",
+          silence_duration_ms: 600
+        }
+      }
     };
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
-      // Immediately request assistant to speak first (no modalities/instructions in payload)
-      const create = {
-        type: "response.create",
-        response: {
-          output_modalities: ["audio"],
-          instructions: "Start the call now. Say: 'Hi! Thanks for calling—how can I help today?' Then pause for the caller."
-        }
-      };
+      const create = { type: "response.create" };
       ws.send(JSON.stringify(create));
       console.log("OPENAI: session.update and response.create sent");
       if (typeof onReady === "function") {
