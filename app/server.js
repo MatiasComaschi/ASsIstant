@@ -170,17 +170,12 @@ function openaiConnect({ instructions, onReady } = {}) {
       type: "session.update",
       session: {
         instructions,
-        // Request audio output at the session level
-        output_modalities: ["audio"],
-        audio: {
-          output: {
-            voice: "marin",
-            format: "g711_ulaw"
-          }
-        },
+        voice: "marin",
         input_audio_format: "g711_ulaw",
+        output_audio_format: "g711_ulaw",
         turn_detection: {
           type: "server_vad",
+          create_response: true,
           silence_duration_ms: 600
         }
       }
@@ -188,8 +183,8 @@ function openaiConnect({ instructions, onReady } = {}) {
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
-      const create = { type: "response.create" };
-      ws.send(JSON.stringify(create));
+      // Always send minimal response.create
+      ws.send(JSON.stringify({ type: "response.create" }));
       logAI("session.update and response.create sent");
       if (typeof onReady === "function") {
         try { onReady(); } catch (e) { console.error("onReady callback failed:", e); }
@@ -326,50 +321,19 @@ wss.on("connection", async (twilioWs, req) => {
           logAI("MSG TYPE:", msg?.type);
           if (msg?.type === "error") logAI("ERROR PAYLOAD:", msg);
 
-          // Temporary speech test: when session is created, ask assistant to say a short phrase
-          if (msg.type === "session.created") {
-            try {
-              const test = { type: "response.create" };
-              openaiWs.send(JSON.stringify(test));
-              logAI("Sent speech test response.create");
-            } catch (e) {
-              logAI("Failed to send speech test:", e?.message || e);
-            }
-          }
-
-          // Primary: handle OpenAI realtime audio deltas
+          // Only handle GA event: response.output_audio.delta
           if (msg.type === "response.output_audio.delta" && msg.delta) {
             const audioB64 = msg.delta;
-            logAI("GOT response.output_audio.delta len=", audioB64?.length || 0, "streamSid=", streamSid);
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               try {
                 twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
-                sentAudioChunks++;
-                if (sentAudioChunks % 50 === 0) logTW("SENT -> TWILIO media count=", sentAudioChunks, "streamSid=", streamSid);
+                console.log("OPENAI->TWILIO AUDIO bytes=", audioB64?.length || 0);
               } catch (err) {
                 console.error("Failed to send media to Twilio:", err);
               }
             }
             return;
           }
-
-          if (msg.type === "response.output_audio.done") {
-            logAI("response.output_audio.done streamSid=", streamSid);
-            return;
-          }
-
-          // Fallback: handle other possible audio fields conservatively
-          const audioB64 = msg?.delta?.audio || msg?.response?.audio?.delta || msg?.audio?.delta || msg?.output_audio?.delta || msg?.audio?.data || msg?.delta || msg?.response?.audio?.data || msg?.output_audio?.data;
-          if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-            try {
-              twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
-              sentAudioChunks++;
-              if (sentAudioChunks % 50 === 0) logTW("SENT -> TWILIO media count=", sentAudioChunks, "streamSid=", streamSid);
-            } catch (err) {
-              console.error("Failed to send media to Twilio:", err);
-            }
-          }
-
         });
 
         return;
