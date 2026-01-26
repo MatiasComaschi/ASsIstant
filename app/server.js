@@ -182,15 +182,7 @@ function openaiConnect({ instructions, onReady } = {}) {
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
-      const create = {
-        type: "response.create",
-        response: {
-          modalities: ["audio"],
-          instructions: "Respond naturally to the caller.",
-          voice: "marin",
-          audio_format: "g711_ulaw"
-        }
-      };
+      const create = { type: "response.create" };
       ws.send(JSON.stringify(create));
       logAI("session.update and response.create sent");
       if (typeof onReady === "function") {
@@ -325,15 +317,7 @@ wss.on("connection", async (twilioWs, req) => {
           // Temporary speech test: when session is created, ask assistant to say a short phrase
           if (msg.type === "session.created") {
             try {
-              const test = {
-                type: "response.create",
-                response: {
-                  modalities: ["audio"],
-                  instructions: "Say: Hello. The voice system is working.",
-                  voice: "marin",
-                  audio_format: "g711_ulaw"
-                }
-              };
+              const test = { type: "response.create" };
               openaiWs.send(JSON.stringify(test));
               logAI("Sent speech test response.create");
             } catch (e) {
