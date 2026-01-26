@@ -157,10 +157,10 @@ async function loadCompanyContext(companyId) {
 }
 
 function openaiConnect({ instructions, onReady } = {}) {
-  // Use the realtime preview model and required beta header
-  const url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
+  // Use the correct GA Realtime model endpoint
+  const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
   const ws = new WebSocket(url, {
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "OpenAI-Beta": "realtime=v1" },
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
   });
 
   ws.on("open", () => {
@@ -171,21 +171,16 @@ function openaiConnect({ instructions, onReady } = {}) {
       session: {
         instructions,
         voice: "marin",
+        modalities: ["audio"],
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        turn_detection: {
-          type: "server_vad",
-          create_response: true,
-          silence_duration_ms: 600
-        }
+        turn_detection: { type: "server_vad", silence_duration_ms: 600 }
       }
     };
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
-      // Always send minimal response.create
-      ws.send(JSON.stringify({ type: "response.create" }));
-      logAI("session.update and response.create sent");
+      logAI("session.update sent");
       if (typeof onReady === "function") {
         try { onReady(); } catch (e) { console.error("onReady callback failed:", e); }
       }
