@@ -4,150 +4,43 @@ import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
 import { createClient } from "@supabase/supabase-js";
 
+const BUILD_STAMP = "2026-01-26T20:10Z-mainserver-v3";
+console.log("BUILD_STAMP=", BUILD_STAMP);
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const VOICE_GATEWAY_TOKEN = process.env.VOICE_GATEWAY_TOKEN; // optional but recommended
+const VOICE_GATEWAY_TOKEN = process.env.VOICE_GATEWAY_TOKEN;
 const PORT = Number(process.env.PORT || 3000);
-
-if (!OPENAI_API_KEY) console.warn("Warning: Missing OPENAI_API_KEY");
-if (!SUPABASE_URL) console.warn("Warning: Missing SUPABASE_URL");
-if (!SUPABASE_SERVICE_ROLE_KEY) console.warn("Warning: Missing SUPABASE_SERVICE_ROLE_KEY");
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
 const app = express();
-
-const logAI = (...args) => console.log("🧠 OPENAI |", ...args);
-const logTW = (...args) => console.log("📞 TWILIO |", ...args);
-
-app.use((req, res, next) => {
-  console.log(
-    "HTTP IN:",
-    req.method,
-    req.url,
-    "host=",
-    req.headers.host,
-    "ip=",
-    req.socket?.remoteAddress
-  );
-  next();
-});
-
-app.get("/", (_, res) => res.status(200).send("ok"));
-app.get("/health", (_, res) => res.status(200).send("ok"));
-app.post(
-  "/twiml",
-  express.urlencoded({ extended: false }),
-  (req, res) => {
-    const companyId = req.query.company_id || process.env.DEFAULT_COMPANY_ID;
-    const token = req.query.token || process.env.VOICE_GATEWAY_TOKEN;
-
-    console.log("TWIML_DEBUG query=", req.query);
-    console.log("TWIML_DEBUG DEFAULT_COMPANY_ID=", process.env.DEFAULT_COMPANY_ID);
-    console.log("TWIML_DEBUG companyId=", companyId, "tokenPresent=", !!token);
-
-    if (!companyId) {
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>This number is not configured yet.</Say>\n</Response>`;
-      res.set("Content-Type", "text/xml; charset=utf-8");
-      res.status(200).send(twiml);
-      return;
-    }
-
-    const wsUrl = `wss://${req.headers.host}/twilio`;
-
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000">\n      <Parameter name="company_id" value="${xmlEscapeAttr(companyId)}"/>\n      <Parameter name="token" value="${xmlEscapeAttr(token)}"/>\n    </Stream>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
-
-    res.set("Content-Type", "text/xml; charset=utf-8");
-    res.status(200).send(twiml);
-  }
-);
-
-app.get("/twiml", (req, res) => {
-  const companyId = req.query.company_id || process.env.DEFAULT_COMPANY_ID;
-  const token = req.query.token || process.env.VOICE_GATEWAY_TOKEN;
-
-  console.log("TWIML_DEBUG query=", req.query);
-  console.log("TWIML_DEBUG DEFAULT_COMPANY_ID=", process.env.DEFAULT_COMPANY_ID);
-  console.log("TWIML_DEBUG companyId=", companyId, "tokenPresent=", !!token);
-
-  if (!companyId) {
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>This number is not configured yet.</Say>\n</Response>`;
-    res.set("Content-Type", "text/xml; charset=utf-8");
-    res.status(200).send(twiml);
-    return;
-  }
-
-  const wsUrl = `wss://${req.headers.host}/twilio`;
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>Please hold while we connect you.</Say>\n  <Pause length="1"/>\n  <Connect>\n    <Stream url="${xmlEscapeAttr(wsUrl)}" track="inbound_track" content-type="audio/x-mulaw;rate=8000">\n      <Parameter name="company_id" value="${xmlEscapeAttr(companyId)}"/>\n      <Parameter name="token" value="${xmlEscapeAttr(token)}"/>\n    </Stream>\n  </Connect>\n  <Pause length="60"/>\n</Response>`;
-
-  res.set("Content-Type", "text/xml; charset=utf-8");
-  res.status(200).send(twiml);
-});
-app.get("/version", (_, res) => {
-  res.status(200).json({
-    name: "voice-gateway",
-    commit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
-    time: new Date().toISOString(),
-  });
-});
-app.get("/twilio", (_, res) => {
-  res.status(426).send("This endpoint is WebSocket-only. Use wss://.../twilio");
-});
-
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection:", reason);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("Uncaught Exception:", err);
-  // Keep running to avoid killing active calls
-});
-
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
-function safeJsonParse(s) {
-  try { return JSON.parse(s); } catch { return null; }
-}
+function logAI(...args) { console.log("🧠 OPENAI |", ...args); }
+function logTW(...args) { console.log("📞 TWILIO |", ...args); }
 
-function xmlEscapeAttr(s) {
-  if (s === undefined || s === null) return "";
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
+function safeJsonParse(s) { try { return JSON.parse(s); } catch { return null; } }
 
 async function loadCompanyContext(companyId) {
-  // Pull per-company persona + a small KB summary for grounding
-  const { data: profile, error: profileErr } = await supabase
+  const { data: profile } = await supabase
     .from("ai_profiles")
     .select("system_prompt, greeting_script, disclosure_script")
     .eq("company_id", companyId)
     .maybeSingle();
-
-  if (profileErr) throw profileErr;
-
-  const { data: kb, error: kbErr } = await supabase
+  const { data: kb } = await supabase
     .from("knowledge_base_items")
     .select("type,title,question,answer")
     .eq("company_id", companyId)
     .eq("is_active", true)
     .limit(25);
-
-  if (kbErr) throw kbErr;
-
   const kbText = (kb || [])
-    .map((i) => {
-      const q = i.question ? `Q: ${i.question}\n` : "";
-      return `[${i.type}] ${i.title}\n${q}A: ${i.answer}`;
-    })
+    .map(i => `[${i.type}] ${i.title}\n${i.question ? `Q: ${i.question}\n` : ""}A: ${i.answer}`)
     .join("\n\n");
-
   return {
     systemPrompt: profile?.system_prompt || "You are a friendly receptionist.",
     kbText,
@@ -156,298 +49,310 @@ async function loadCompanyContext(companyId) {
   };
 }
 
-function openaiConnect({ instructions, onReady } = {}) {
-  // Use the current GA Realtime model endpoint and headers
+function sendToOpenAI(ws, obj) {
+  const raw = JSON.stringify(obj);
+  console.log("🧠 OPENAI | SENDING TO WS:", raw);
+  ws.send(raw);
+}
+
+function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
   const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
-  const ws = new WebSocket(url, {
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "OpenAI-Beta": "realtime=v1"
-    },
-  });
+  const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` };
+  console.log("🧠 OPENAI | CONNECTING TO:", url);
+  console.log("🧠 OPENAI | HEADERS:", headers);
+  const ws = new WebSocket(url, "realtime", { headers });
+  ws._ready = false;
+  ws._activeResponse = false;
+  let sessionTypeMode = "with"; // "with" or "without"
+  let sessionUpdateAttempts = 0;
 
-  // Track if a response is active to gate response.create
-  ws.activeResponse = false;
+  function buildSessionUpdate() {
+    const session = sessionTypeMode === "with"
+      ? { type: "realtime", instructions: instructions }
+      : { instructions: instructions };
+    return { type: "session.update", session };
+  }
 
-  // Track if a response is active to gate response.create
-  ws.activeResponse = false;
-
-  ws.on("open", () => {
-    logAI("WS OPEN");
-
-    const sessionUpdate = {
-      type: "session.update",
-      session: {
-        type: "realtime",
-        instructions,
-        turn_detection: { type: "server_vad", silence_duration_ms: 600 },
-        audio: {
-          input: { format: { type: "audio/pcmu" } },
-          output: {
-            format: { type: "audio/pcmu" },
-            voice: "alloy"
-          }
-        }
+  function sendSessionUpdate(reason) {
+    const sessionUpdate = buildSessionUpdate();
+    sessionUpdateAttempts += 1;
+    logAI(`SENDING SESSION.UPDATE PAYLOAD (${reason}) #${sessionUpdateAttempts}:`, JSON.stringify(sessionUpdate));
+    sendToOpenAI(ws, sessionUpdate);
+  }
+  ws.on("open", () => logAI("WS OPEN"));
+  ws.on("message", data => {
+    let evt; try { evt = JSON.parse(data); } catch { return; }
+    logAI("EVENT:", evt.type, JSON.stringify(evt));
+    if (evt.type === "session.created") {
+      // Only send session.update after session.created is received
+      sendSessionUpdate("after session.created");
+    }
+    if (evt.type === "session.updated") {
+      logAI("SUCCESS: session.updated received. Ready for audio.");
+      ws._ready = true;
+      onReady?.();
+    }
+    if (evt.type === "error") {
+      logAI("ERROR PAYLOAD:", JSON.stringify(evt));
+      const err = evt.error || {};
+      const param = err.param;
+      const code = err.code;
+      // Adaptive fallback for session.type requirement mismatch
+      if (param === "session.type" && code === "unknown_parameter" && sessionTypeMode === "with") {
+        sessionTypeMode = "without";
+        sendSessionUpdate("fallback: remove session.type");
+      } else if (param === "session.type" && code === "missing_required_parameter" && sessionTypeMode === "without") {
+        sessionTypeMode = "with";
+        sendSessionUpdate("fallback: add session.type");
       }
-    };
-
-    try {
-      ws.send(JSON.stringify(sessionUpdate));
-      logAI("OPENAI EVENT: session.update sent");
-      if (typeof onReady === "function") {
-        try { onReady(); } catch (e) { console.error("onReady callback failed:", e); }
+      onError?.(evt);
+    }
+    if (evt.type === "input_audio_buffer.committed") {
+      if (!ws._activeResponse) {
+        ws._activeResponse = true;
+        sendToOpenAI(ws, { type: "response.create" });
       }
-    } catch (e) {
-      logAI("WS ERROR sending session/update:", e?.message || e);
+    }
+    if (evt.type === "response.audio.delta" || evt.type === "response.output_audio.delta") {
+      if (evt.delta) onAudioDelta?.(evt.delta);
+    }
+    if (evt.type === "response.done") {
+      ws._activeResponse = false;
     }
   });
-
-  ws.on("error", (e) => logAI("WS ERROR", e?.message || e));
+  ws.on("error", e => logAI("WS ERROR", e?.message || e));
   ws.on("close", (c, r) => logAI("WS CLOSE", c, r?.toString?.() || r));
-
   return ws;
 }
 
-wss.on("connection", async (twilioWs, req) => {
-  console.log("WS CONNECTED:", req.url);
-  twilioWs.on("close", (code, reason) => {
-    console.log("WS CLOSED:", code, reason?.toString?.() || reason);
-  });
-  twilioWs.on("error", (err) => console.log("WS ERROR:", err));
-  // Do NOT read company_id/token from the connection URL; Twilio provides them in the
-  // start event's customParameters. Accept the connection and wait for 'start'.
-  let companyId = null;
-  let token = null;
-  let streamSid = null;
-  let callSid = null;
-  let openaiWs = null;
-  let ready = false;
-  // buffer of base64 audio frames until OpenAI connection is ready
-  const audioBuffer = [];
-
-  // Note: setup will be performed after we receive the Twilio 'start' event.
-
-  // Log Twilio websocket events for debugging
-  twilioWs.on("message", (buf) => {
-    try {
-      const msg = safeJsonParse(buf.toString());
-      if (!msg) return;
-      logTW("MSG:", msg.event || msg.type || null);
-
-      // call async handler and catch errors to avoid crashing
-      (async () => {
-        try {
-          await handleTwilioMessage(msg);
-        } catch (e) {
-          console.error("TWILIO_HANDLER_ERR", e);
-        }
-      })();
-    } catch (e) {
-      console.error("TWILIO_HANDLER_ERR", e);
-    }
-  });
-
-  // Move original twilio message handling into a named function so we can call it from logger above
-  async function handleTwilioMessage(msg) {
-    if (!msg) return;
-
-    if (msg.event === "start") {
-        // set stream and call ids from the Twilio start event
-        streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
-        callSid = msg?.start?.callSid || msg?.callSid || callSid;
-        logTW("start streamSid=", streamSid, "callSid=", callSid);
-        logTW("start customParameters=", msg?.start?.customParameters);
-
-        // Extract customParameters provided by Twilio
-        const params = msg?.start?.customParameters || {};
-        const startCompanyId = params.company_id || params.companyId;
-        const startToken = params.token;
-
-        console.log("START companyId=", startCompanyId, "tokenPresent=", !!startToken);
-
-        // Validate token at start time if server requires one
-        if (VOICE_GATEWAY_TOKEN && startToken !== VOICE_GATEWAY_TOKEN) {
-          console.log("TOKEN MISMATCH at START: provided=", !!startToken);
-          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1008, "Bad token");
-          return;
-        }
-
-        // If Twilio did not include company_id in the initial WS URL, it should provide it
-        // in the start.customParameters. If it's missing here, do not force-close the socket;
-        // simply log and wait (caller may reconnect or provide parameters).
-        if (!startCompanyId) {
-          console.log("START missing company_id; waiting for parameters in start.customParameters");
-          return;
-        }
-
-        // adopt validated values
-        companyId = startCompanyId;
-        token = startToken;
-
-        // Load company context
-        let ctx;
-        try {
-          ctx = await loadCompanyContext(companyId);
-        } catch (err) {
-          console.error("Failed to load company context:", err);
-          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1011, "Server setup failed");
-          return;
-        }
-
-        const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base (use only if relevant; keep answers short and human):\n${ctx.kbText}\n\nPhone style:\n- Sound natural and warm, like a real receptionist.\n- Short answers, ask one question at a time.\n- If the caller asks \"how are you\", respond like a human.\n- If unsure, ask a clarifying question or offer to transfer to a person.\n\nStart of call:\n- Greet the caller naturally and ask what they need.`.trim();
-
-        // Connect to OpenAI and set onReady to flip `ready` only after session.update+response.create are sent
-        openaiWs = openaiConnect({
-          instructions,
-          onReady: () => {
-            ready = true;
-            logAI("READY=TRUE");
-            logAI("FLUSHING BUFFER", audioBuffer.length);
-            while (audioBuffer.length && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-              const payload = audioBuffer.shift();
-              try { openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload })); } catch (e) { console.error("Failed to flush buffered audio:", e); }
-            }
-          }
-        });
-
-        // If OpenAI never opens within 3s after init, log a timeout for debugging
-        setTimeout(() => { if (!ready) logAI("OPENAI TIMEOUT (not open after 3s)"); }, 3000);
-
-        // Ensure Twilio closes if OpenAI closes
-        openaiWs.on("close", (code, reason) => {
-          logAI("WS CLOSE", code, reason?.toString?.());
-          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
-        });
-
-        // a small counter to throttle SENT -> TWILIO logs
-        let sentAudioChunks = 0;
-
-        // Log message types and forward audio to Twilio
-        let twilioMediaLogCount = 0;
-        openaiWs.on("message", (buf) => {
-          const msg = safeJsonParse(buf.toString());
-          if (!msg) return;
-          // Log key OpenAI events
-          if (["session.created","session.updated","input_audio_buffer.append","input_audio_buffer.flushed","response.created","response.output_audio.delta","response.done","error"].includes(msg.type)) {
-            logAI("OPENAI EVENT:", msg.type);
-          }
-          if (msg?.type === "error") logAI("ERROR PAYLOAD:", msg);
-
-          // Response gating
-          if (msg.type === "response.created") openaiWs.activeResponse = true;
-          if (msg.type === "response.done") openaiWs.activeResponse = false;
-
-          // Forward audio to Twilio, rate-limited logs
-          if (msg.type === "response.output_audio.delta" && msg.delta) {
-            const audioB64 = msg.delta;
-            if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              try {
-                twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
-                twilioMediaLogCount++;
-                if (twilioMediaLogCount % 20 === 1) logTW("sending audio to Twilio len=", audioB64?.length || 0, "streamSid=", streamSid);
-              } catch (err) {
-                console.error("Failed to send media to Twilio:", err);
-              }
-            }
-            return;
-          }
-        });
-    // Only send response.create if no active response
-    function sendResponseCreate() {
-      if (openaiWs && openaiWs.readyState === WebSocket.OPEN && !openaiWs.activeResponse) {
-        openaiWs.send(JSON.stringify({ type: "response.create" }));
-        openaiWs.activeResponse = true;
-        logAI("OPENAI EVENT: response.create sent");
-      }
-    }
-
-        return;
-    }
-
-    if (msg.event === "media") {
-      const payload = msg?.media?.payload;
-      logTW("EVENT: media chunk", { streamSid, len: payload?.length || 0 });
-      if (!payload) return;
-      if (!ready) {
-        // buffer up to 200 frames, drop oldest when exceeding
-        audioBuffer.push(payload);
-        if (audioBuffer.length > 200) {
-          audioBuffer.shift();
-          logTW("BUFFER DROP");
-        }
-        logTW("BUFFERED_FRAMES=", audioBuffer.length);
-        return;
-      }
-
-      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-      const append = { type: "input_audio_buffer.append", audio: payload };
-      try { openaiWs.send(JSON.stringify(append)); } catch (err) { console.error("Failed to forward media to OpenAI:", err); }
-      return;
-    }
-
-    if (msg.event === "stop") {
-      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
-    }
-  }
-
-  // Allow connection even if query params are absent; we'll validate after 'start' event
-
-  // Note: actual message processing is now handled in the logged handler above
-
-  twilioWs.on("close", () => {
-    if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
-  });
-});
+app.get("/health", (_, res) => res.status(200).send("ok"));
 
 server.on("upgrade", (req, socket, head) => {
-  console.log("UPGRADE REQ:", req.url, "headers.upgrade=", req.headers.upgrade);
   try {
-    const { pathname } = new URL(req.url, `http://${req.headers.host}`);
-    if (pathname !== "/twilio") {
-      const body = "Not Found";
-      socket.write(
-        `HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(
-          body
-        )}\r\nConnection: close\r\n\r\n${body}`
-      );
-      socket.destroy();
-      return;
-    }
-
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req);
-    });
-  } catch (e) {
-    const body = "Bad Request";
-    try {
-      socket.write(
-        `HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(
-          body
-        )}\r\nConnection: close\r\n\r\n${body}`
-      );
-    } catch (err) {
-      // ignore
-    }
-    socket.destroy();
-  }
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname !== "/twilio") return socket.destroy();
+    wss.handleUpgrade(req, socket, head, ws => wss.emit("connection", ws, req));
+  } catch { socket.destroy(); }
 });
 
-server.on("error", (err) => {
-  console.error("Server error:", err);
+wss.on("connection", async (twilioWs, req) => {
+  let streamSid = null;
+  let openaiWs = null;
+  let ready = false;
+  const audioBuffer = [];
+  function flushBuffer() {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !ready) return;
+    while (audioBuffer.length) {
+      const payload = audioBuffer.shift();
+      sendToOpenAI(openaiWs, { type: "input_audio_buffer.append", audio: payload });
+    }
+  }
+  twilioWs.on("message", async buf => {
+    const msg = safeJsonParse(buf.toString());
+    if (!msg) return;
+    if (msg.event === "start") {
+      streamSid = msg?.start?.streamSid || streamSid;
+      const params = msg?.start?.customParameters || {};
+      const companyId = params.company_id || params.companyId;
+      const token = params.token;
+      if (VOICE_GATEWAY_TOKEN && token !== VOICE_GATEWAY_TOKEN) {
+        if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1008, "Bad token");
+        return;
+      }
+      if (!companyId) return;
+      const ctx = await loadCompanyContext(companyId);
+      const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base:\n${ctx.kbText}\n\nPhone style:\n- Natural, warm receptionist\n- Short answers; ask one question at a time\n\nStart of call:\n- Greet naturally and ask what they need.`.trim();
+      openaiWs = openaiConnect({
+        instructions,
+        onReady: () => { ready = true; flushBuffer(); },
+        onAudioDelta: delta => {
+          if (!streamSid) return;
+          if (twilioWs.readyState !== WebSocket.OPEN) return;
+          twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: delta } }));
+        },
+      });
+      return;
+    }
+    if (msg.event === "media") {
+      const payload = msg.media?.payload;
+      if (!payload) return;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !ready) {
+        audioBuffer.push(payload);
+        if (audioBuffer.length > 300) audioBuffer.shift();
+        return;
+      }
+      sendToOpenAI(openaiWs, { type: "input_audio_buffer.append", audio: payload });
+      return;
+    }
+    if (msg.event === "stop") {
+      try { openaiWs?.close(); } catch {}
+      try { twilioWs?.close(); } catch {}
+      return;
+    }
+  });
+  twilioWs.on("close", () => { try { openaiWs?.close(); } catch {} });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Voice gateway listening on :${PORT}`);
-  console.log(`WebSocket path: ws(s)://<host>/twilio?company_id=<uuid>&token=<optional>`);
-  console.log("LISTEN_ADDR:", server.address());
-
-  (async () => {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/health`);
-      console.log("SELF_CHECK /health", res.status);
-    } catch (err) {
-      console.error("SELF_CHECK /health failed:", err);
-    }
-  })();
+  console.log("BUILD_STAMP=2026-01-26T19:40Z-mainserver-v2");
 });
+logAI("SERVER STARTED AT", new Date().toISOString());
+import "dotenv/config";
+import http from "http";
+import express from "express";
+import WebSocket, { WebSocketServer } from "ws";
+import { createClient } from "@supabase/supabase-js";
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const VOICE_GATEWAY_TOKEN = process.env.VOICE_GATEWAY_TOKEN;
+const PORT = Number(process.env.PORT || 3000);
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false },
+});
+
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+
+function logAI(...args) { console.log("🧠 OPENAI |", ...args); }
+function logTW(...args) { console.log("📞 TWILIO |", ...args); }
+
+function safeJsonParse(s) { try { return JSON.parse(s); } catch { return null; } }
+
+async function loadCompanyContext(companyId) {
+  const { data: profile } = await supabase
+    .from("ai_profiles")
+    .select("system_prompt, greeting_script, disclosure_script")
+    .eq("company_id", companyId)
+    .maybeSingle();
+  const { data: kb } = await supabase
+    .from("knowledge_base_items")
+    .select("type,title,question,answer")
+    .eq("company_id", companyId)
+    .eq("is_active", true)
+    .limit(25);
+  const kbText = (kb || [])
+    .map(i => `[${i.type}] ${i.title}\n${i.question ? `Q: ${i.question}\n` : ""}A: ${i.answer}`)
+    .join("\n\n");
+  return {
+    systemPrompt: profile?.system_prompt || "You are a friendly receptionist.",
+    kbText,
+    greeting: profile?.greeting_script || "Hi! How can I help?",
+    disclosure: profile?.disclosure_script || "Quick note: I'm an AI assistant.",
+  };
+}
+
+function sendToOpenAI(ws, obj) {
+  ws.send(JSON.stringify(obj));
+}
+
+function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
+  const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+  const ws = new WebSocket(url, "realtime", {
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+  });
+  ws._ready = false;
+  ws._activeResponse = false;
+  ws.on("open", () => logAI("WS OPEN"));
+  ws.on("message", data => {
+    let evt; try { evt = JSON.parse(data); } catch { return; }
+    logAI("EVENT:", evt.type);
+    if (evt.type === "error") { logAI("ERROR PAYLOAD:", evt); onError?.(evt); return; }
+    if (evt.type === "session.created") {
+      const sessionUpdate = { type: "session.update", session: { instructions } };
+      logAI("SENDING SESSION.UPDATE PAYLOAD:", JSON.stringify(sessionUpdate));
+      sendToOpenAI(ws, sessionUpdate);
+      return;
+    }
+    if (evt.type === "session.updated") { ws._ready = true; onReady?.(); return; }
+    if (evt.type === "input_audio_buffer.committed") {
+      if (!ws._activeResponse) { ws._activeResponse = true; sendToOpenAI(ws, { type: "response.create" }); }
+      return;
+    }
+    if (evt.type === "response.audio.delta" || evt.type === "response.output_audio.delta") {
+      if (evt.delta) onAudioDelta?.(evt.delta);
+      return;
+    }
+    if (evt.type === "response.done") { ws._activeResponse = false; return; }
+  });
+  ws.on("error", e => logAI("WS ERROR", e?.message || e));
+  ws.on("close", (c, r) => logAI("WS CLOSE", c, r?.toString?.() || r));
+  return ws;
+}
+
+app.get("/health", (_, res) => res.status(200).send("ok"));
+
+server.on("upgrade", (req, socket, head) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname !== "/twilio") return socket.destroy();
+    wss.handleUpgrade(req, socket, head, ws => wss.emit("connection", ws, req));
+  } catch { socket.destroy(); }
+});
+
+wss.on("connection", async (twilioWs, req) => {
+  let streamSid = null;
+  let openaiWs = null;
+  let ready = false;
+  const audioBuffer = [];
+  function flushBuffer() {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    while (audioBuffer.length) {
+      const payload = audioBuffer.shift();
+      sendToOpenAI(openaiWs, { type: "input_audio_buffer.append", audio: payload });
+    }
+  }
+  twilioWs.on("message", async buf => {
+    const msg = safeJsonParse(buf.toString());
+    if (!msg) return;
+    if (msg.event === "start") {
+      streamSid = msg?.start?.streamSid || streamSid;
+      const params = msg?.start?.customParameters || {};
+      const companyId = params.company_id || params.companyId;
+      const token = params.token;
+      if (VOICE_GATEWAY_TOKEN && token !== VOICE_GATEWAY_TOKEN) {
+        if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1008, "Bad token");
+        return;
+      }
+      if (!companyId) return;
+      const ctx = await loadCompanyContext(companyId);
+      const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base:\n${ctx.kbText}\n\nPhone style:\n- Natural, warm receptionist\n- Short answers; ask one question at a time\n\nStart of call:\n- Greet naturally and ask what they need.`.trim();
+      openaiWs = openaiConnect({
+        instructions,
+        onReady: () => { ready = true; flushBuffer(); },
+        onAudioDelta: delta => {
+          if (!streamSid) return;
+          if (twilioWs.readyState !== WebSocket.OPEN) return;
+          twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: delta } }));
+        },
+      });
+      return;
+    }
+    if (msg.event === "media") {
+      const payload = msg.media?.payload;
+      if (!payload) return;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !ready) {
+        audioBuffer.push(payload);
+        if (audioBuffer.length > 300) audioBuffer.shift();
+        return;
+      }
+      sendToOpenAI(openaiWs, { type: "input_audio_buffer.append", audio: payload });
+      return;
+    }
+    if (msg.event === "stop") {
+      try { openaiWs?.close(); } catch {}
+      try { twilioWs?.close(); } catch {}
+      return;
+    }
+  });
+  twilioWs.on("close", () => { try { openaiWs?.close(); } catch {} });
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Voice gateway listening on :${PORT}`);
+});
+
