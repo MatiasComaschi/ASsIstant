@@ -163,22 +163,35 @@ function openaiConnect({ instructions, onReady } = {}) {
   ws.on("open", () => {
     console.log("OPENAI WS OPEN");
 
-    // Minimal valid session.update payload per new schema
+    // Realtime session configuration matching OpenAI Realtime schema
     const sessionUpdate = {
       type: "session.update",
       session: {
+        type: "realtime",
         instructions,
-        voice: "marin",
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        turn_detection: { type: "server_vad", silence_duration_ms: 600 }
+        output_modalities: ["audio"],
+        audio: {
+          input: { format: { type: "audio/pcmu" } },
+          output: { format: { type: "audio/pcmu" }, voice: "marin" }
+        },
+        turn_detection: {
+          type: "server_vad",
+          create_response: true,
+          silence_duration_ms: 600
+        }
       }
     };
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
       // Immediately request assistant to speak first (no modalities/instructions in payload)
-      const create = { type: "response.create" };
+      const create = {
+        type: "response.create",
+        response: {
+          output_modalities: ["audio"],
+          instructions: "Start the call now. Say: 'Hi! Thanks for calling—how can I help today?' Then pause for the caller."
+        }
+      };
       ws.send(JSON.stringify(create));
       console.log("OPENAI: session.update and response.create sent");
       if (typeof onReady === "function") {
@@ -310,19 +323,20 @@ wss.on("connection", async (twilioWs, req) => {
           console.log("OPENAI MSG TYPE:", msg?.type);
           if (msg?.type === "error") console.log("OPENAI ERROR PAYLOAD:", msg);
 
+          // handle audio deltas in several possible fields
           if (msg.type === "response.output_audio.delta" && msg.delta) {
             const audioB64 = msg.delta;
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-              try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64.length, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+              try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64?.length || 0, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
             }
             return;
           }
 
-          const audioB64 = msg?.audio?.data || msg?.delta?.audio || msg?.response?.audio?.data || msg?.output_audio?.data;
+          const audioB64 = msg?.delta?.audio || msg?.response?.audio?.delta || msg?.audio?.delta || msg?.output_audio?.delta || msg?.audio?.data || msg?.delta || msg?.response?.audio?.data || msg?.output_audio?.data;
           if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
             const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-            try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64.length, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+            try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64?.length || 0, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
           }
 
         });
