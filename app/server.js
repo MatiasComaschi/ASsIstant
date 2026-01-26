@@ -163,6 +163,9 @@ function openaiConnect({ instructions, onReady } = {}) {
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
   });
 
+  // Track if a response is active to gate response.create
+  ws.activeResponse = false;
+
   ws.on("open", () => {
     logAI("WS OPEN");
 
@@ -170,8 +173,8 @@ function openaiConnect({ instructions, onReady } = {}) {
       type: "session.update",
       session: {
         instructions,
+        modalities: ["audio", "text"],
         voice: "marin",
-        modalities: ["audio"],
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         turn_detection: { type: "server_vad", silence_duration_ms: 600 }
@@ -313,16 +316,21 @@ wss.on("connection", async (twilioWs, req) => {
         openaiWs.on("message", (buf) => {
           const msg = safeJsonParse(buf.toString());
           if (!msg) return;
-          logAI("MSG TYPE:", msg?.type);
+          logAI("OPENAI EVENT:", msg.type);
           if (msg?.type === "error") logAI("ERROR PAYLOAD:", msg);
 
-          // Only handle GA event: response.output_audio.delta
+          // Response gating
+          if (msg.type === "response.created") openaiWs.activeResponse = true;
+          if (msg.type === "response.done") openaiWs.activeResponse = false;
+
+          // Forward audio to Twilio
           if (msg.type === "response.output_audio.delta" && msg.delta) {
             const audioB64 = msg.delta;
+            logAI("response.output_audio.delta received");
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               try {
                 twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
-                console.log("OPENAI->TWILIO AUDIO bytes=", audioB64?.length || 0);
+                console.log("sending audio to Twilio len=", audioB64?.length || 0);
               } catch (err) {
                 console.error("Failed to send media to Twilio:", err);
               }
@@ -330,6 +338,14 @@ wss.on("connection", async (twilioWs, req) => {
             return;
           }
         });
+    // Only send response.create if no active response
+    function sendResponseCreate() {
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN && !openaiWs.activeResponse) {
+        openaiWs.send(JSON.stringify({ type: "response.create" }));
+        openaiWs.activeResponse = true;
+        logAI("Sent response.create");
+      }
+    }
 
         return;
     }
