@@ -195,56 +195,7 @@ wss.on("connection", async (twilioWs, req) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Voice gateway listening on :${PORT}`);
-  console.log("BUILD_STAMP=2026-01-26T19:40Z-mainserver-v2");
 });
-logAI("SERVER STARTED AT", new Date().toISOString());
-import "dotenv/config";
-import http from "http";
-import express from "express";
-import WebSocket, { WebSocketServer } from "ws";
-import { createClient } from "@supabase/supabase-js";
-
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const VOICE_GATEWAY_TOKEN = process.env.VOICE_GATEWAY_TOKEN;
-const PORT = Number(process.env.PORT || 3000);
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false },
-});
-
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
-
-function logAI(...args) { console.log("🧠 OPENAI |", ...args); }
-function logTW(...args) { console.log("📞 TWILIO |", ...args); }
-
-function safeJsonParse(s) { try { return JSON.parse(s); } catch { return null; } }
-
-async function loadCompanyContext(companyId) {
-  const { data: profile } = await supabase
-    .from("ai_profiles")
-    .select("system_prompt, greeting_script, disclosure_script")
-    .eq("company_id", companyId)
-    .maybeSingle();
-  const { data: kb } = await supabase
-    .from("knowledge_base_items")
-    .select("type,title,question,answer")
-    .eq("company_id", companyId)
-    .eq("is_active", true)
-    .limit(25);
-  const kbText = (kb || [])
-    .map(i => `[${i.type}] ${i.title}\n${i.question ? `Q: ${i.question}\n` : ""}A: ${i.answer}`)
-    .join("\n\n");
-  return {
-    systemPrompt: profile?.system_prompt || "You are a friendly receptionist.",
-    kbText,
-    greeting: profile?.greeting_script || "Hi! How can I help?",
-    disclosure: profile?.disclosure_script || "Quick note: I'm an AI assistant.",
-  };
-}
 
 function sendToOpenAI(ws, obj) {
   ws.send(JSON.stringify(obj));
