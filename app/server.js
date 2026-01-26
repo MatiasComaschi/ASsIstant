@@ -75,6 +75,7 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
   const ws = new WebSocket(url, "realtime", { headers });
   ws._ready = false;
   ws._activeResponse = false;
+  let greetingSent = false;
   let sessionTypeMode = "with"; // "with" or "without"
   let sessionUpdateAttempts = 0;
 
@@ -108,6 +109,10 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
     if (evt.type === "session.updated") {
       logAI("SUCCESS: session.updated received. Ready for audio.");
       ws._ready = true;
+      if (!greetingSent) {
+        greetingSent = true;
+        sendToOpenAI(ws, { type: "response.create" });
+      }
       onReady?.();
     }
     if (evt.type === "error") {
