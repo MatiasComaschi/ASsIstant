@@ -167,19 +167,21 @@ function openaiConnect({ instructions, onReady } = {}) {
     const sessionUpdate = {
       type: "session.update",
       session: {
-        type: "realtime",
+        // keep it simple and correct
         instructions,
         output_modalities: ["audio"],
         audio: {
-          input: { format: { type: "audio/pcmu" } },
-          output: { format: { type: "audio/pcmu" }, voice: "marin" }
+          input: {
+            format: { type: "audio/pcmu" },
+            turn_detection: {
+              type: "server_vad",
+              create_response: true,
+              silence_duration_ms: 600,
+            },
+          },
+          output: { format: { type: "audio/pcmu" }, voice: "marin" },
         },
-        turn_detection: {
-          type: "server_vad",
-          create_response: true,
-          silence_duration_ms: 600
-        }
-      }
+      },
     };
 
     try {
@@ -328,7 +330,7 @@ wss.on("connection", async (twilioWs, req) => {
             const audioB64 = msg.delta;
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-              try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64?.length || 0, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+              try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio delta len=", msg.delta?.length || audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
             }
             return;
           }
@@ -336,7 +338,7 @@ wss.on("connection", async (twilioWs, req) => {
           const audioB64 = msg?.delta?.audio || msg?.response?.audio?.delta || msg?.audio?.delta || msg?.output_audio?.delta || msg?.audio?.data || msg?.delta || msg?.response?.audio?.data || msg?.output_audio?.data;
           if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
             const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-            try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64?.length || 0, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+            try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio delta len=", audioB64?.length || 0); } catch (err) { console.error("Failed to send media to Twilio:", err); }
           }
 
         });
