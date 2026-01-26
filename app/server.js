@@ -157,11 +157,17 @@ async function loadCompanyContext(companyId) {
 }
 
 function openaiConnect({ instructions, onReady } = {}) {
-  // Use the correct GA Realtime model endpoint
+  // Use the current GA Realtime model endpoint and headers
   const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
   const ws = new WebSocket(url, {
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "OpenAI-Beta": "realtime=v1"
+    },
   });
+
+  // Track if a response is active to gate response.create
+  ws.activeResponse = false;
 
   // Track if a response is active to gate response.create
   ws.activeResponse = false;
@@ -174,16 +180,20 @@ function openaiConnect({ instructions, onReady } = {}) {
       session: {
         type: "realtime",
         instructions,
-        voice: "marin",
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        turn_detection: { type: "server_vad", silence_duration_ms: 600 }
+        turn_detection: { type: "server_vad", silence_duration_ms: 600 },
+        audio: {
+          input: { format: { type: "audio/pcmu" } },
+          output: {
+            format: { type: "audio/pcmu" },
+            voice: "alloy"
+          }
+        }
       }
     };
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
-      logAI("session.update sent");
+      logAI("OPENAI EVENT: session.update sent");
       if (typeof onReady === "function") {
         try { onReady(); } catch (e) { console.error("onReady callback failed:", e); }
       }
@@ -313,24 +323,28 @@ wss.on("connection", async (twilioWs, req) => {
         let sentAudioChunks = 0;
 
         // Log message types and forward audio to Twilio
+        let twilioMediaLogCount = 0;
         openaiWs.on("message", (buf) => {
           const msg = safeJsonParse(buf.toString());
           if (!msg) return;
-          logAI("OPENAI EVENT:", msg.type);
+          // Log key OpenAI events
+          if (["session.created","session.updated","input_audio_buffer.append","input_audio_buffer.flushed","response.created","response.output_audio.delta","response.done","error"].includes(msg.type)) {
+            logAI("OPENAI EVENT:", msg.type);
+          }
           if (msg?.type === "error") logAI("ERROR PAYLOAD:", msg);
 
           // Response gating
           if (msg.type === "response.created") openaiWs.activeResponse = true;
           if (msg.type === "response.done") openaiWs.activeResponse = false;
 
-          // Forward audio to Twilio
+          // Forward audio to Twilio, rate-limited logs
           if (msg.type === "response.output_audio.delta" && msg.delta) {
             const audioB64 = msg.delta;
-            logAI("response.output_audio.delta received");
             if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               try {
                 twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: audioB64 } }));
-                console.log("sending audio to Twilio len=", audioB64?.length || 0);
+                twilioMediaLogCount++;
+                if (twilioMediaLogCount % 20 === 1) logTW("sending audio to Twilio len=", audioB64?.length || 0, "streamSid=", streamSid);
               } catch (err) {
                 console.error("Failed to send media to Twilio:", err);
               }
@@ -343,7 +357,7 @@ wss.on("connection", async (twilioWs, req) => {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN && !openaiWs.activeResponse) {
         openaiWs.send(JSON.stringify({ type: "response.create" }));
         openaiWs.activeResponse = true;
-        logAI("Sent response.create");
+        logAI("OPENAI EVENT: response.create sent");
       }
     }
 
