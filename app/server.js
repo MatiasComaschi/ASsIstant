@@ -154,54 +154,33 @@ async function loadCompanyContext(companyId) {
 }
 
 function openaiConnect({ instructions, onReady } = {}) {
-  // Official docs: wss://api.openai.com/v1/realtime?model=gpt-realtime
-  const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+  // Use the realtime preview model and required beta header
+  const url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
   const ws = new WebSocket(url, {
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "OpenAI-Beta": "realtime=v1" },
   });
 
   ws.on("open", () => {
     console.log("OPENAI WS OPEN");
 
-    // Configure session for telephony μ-law audio and server-side VAD auto-response.
+    // Minimal valid session.update payload per new schema
     const sessionUpdate = {
       type: "session.update",
       session: {
+        instructions,
+        voice: "marin",
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        type: "realtime",
-        model: "gpt-realtime",
-        output_modalities: ["audio"],
-        instructions,
-        audio: {
-          input: {
-            format: { type: "audio/pcmu" },
-            turn_detection: {
-              type: "server_vad",
-              create_response: true,
-              silence_duration_ms: 600,
-            },
-          },
-          output: {
-            format: { type: "audio/pcmu" },
-            voice: "marin",
-          },
-        },
-      },
+        turn_detection: { type: "server_vad", silence_duration_ms: 600 }
+      }
     };
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
-      // Force model to speak first immediately after session.update
-      const greet = {
-        type: "response.create",
-        response: {
-          modalities: ["audio"],
-          instructions: "Start with a warm, natural greeting and ask what they need.",
-        },
-      };
-      ws.send(JSON.stringify(greet));
-      console.log("OPENAI: session.update and initial response.create sent");
+      // Immediately request assistant to speak first (no modalities/instructions in payload)
+      const create = { type: "response.create" };
+      ws.send(JSON.stringify(create));
+      console.log("OPENAI: session.update and response.create sent");
       if (typeof onReady === "function") {
         try { onReady(); } catch (e) { console.error("onReady callback failed:", e); }
       }
