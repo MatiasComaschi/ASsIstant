@@ -182,7 +182,15 @@ function openaiConnect({ instructions, onReady } = {}) {
 
     try {
       ws.send(JSON.stringify(sessionUpdate));
-      const create = { type: "response.create" };
+      const create = {
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "Respond naturally to the caller.",
+          voice: "marin",
+          audio_format: "g711_ulaw"
+        }
+      };
       ws.send(JSON.stringify(create));
       logAI("session.update and response.create sent");
       if (typeof onReady === "function") {
@@ -319,7 +327,12 @@ wss.on("connection", async (twilioWs, req) => {
             try {
               const test = {
                 type: "response.create",
-                response: { instructions: "Say: Hello. The voice system is working." }
+                response: {
+                  modalities: ["audio"],
+                  instructions: "Say: Hello. The voice system is working.",
+                  voice: "marin",
+                  audio_format: "g711_ulaw"
+                }
               };
               openaiWs.send(JSON.stringify(test));
               logAI("Sent speech test response.create");
