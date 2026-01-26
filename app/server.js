@@ -100,8 +100,7 @@ process.on("unhandledRejection", (reason, promise) => {
 
 process.on("uncaughtException", (err) => {
   console.error("Uncaught Exception:", err);
-  // Optional: exit so process manager can restart the app
-  process.exit(1);
+  // Keep running to avoid killing active calls
 });
 
 const server = http.createServer(app);
@@ -223,10 +222,10 @@ wss.on("connection", async (twilioWs, req) => {
     console.log("WS CLOSED:", code, reason?.toString?.() || reason);
   });
   twilioWs.on("error", (err) => console.log("WS ERROR:", err));
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  // allow company_id/token via query OR via Twilio start.customParameters
-  let companyId = url.searchParams.get("company_id") || null;
-  let token = url.searchParams.get("token") || null;
+  // Do NOT read company_id/token from the connection URL; Twilio provides them in the
+  // start event's customParameters. Accept the connection and wait for 'start'.
+  let companyId = null;
+  let token = null;
   let streamSid = null;
   let callSid = null;
   let openaiWs = null;
@@ -234,88 +233,7 @@ wss.on("connection", async (twilioWs, req) => {
   // buffer of base64 audio frames until OpenAI connection is ready
   const audioBuffer = [];
 
-  // Deferred initializer: sets up OpenAI connection and flushes buffered audio
-  async function initIfNeeded({ companyId: startCid, token: startToken }) {
-    // If already ready, nothing to do
-    if (ready && openaiWs && openaiWs.readyState === WebSocket.OPEN) return;
-
-    // adopt provided values if present
-    companyId = companyId || startCid || null;
-    token = token || startToken || null;
-
-    if (!companyId) {
-      // caller hasn't supplied a company id yet; we'll wait until they do
-      return;
-    }
-
-    // Validate token only when server has VOICE_GATEWAY_TOKEN configured
-    if (VOICE_GATEWAY_TOKEN && token !== VOICE_GATEWAY_TOKEN) {
-      console.log("TOKEN MISMATCH: provided=", !!token);
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1008, "Bad token");
-      return;
-    }
-
-    // Load company context
-    let ctx;
-    try {
-      ctx = await loadCompanyContext(companyId);
-    } catch (err) {
-      console.error("Failed to load company context:", err);
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1011, "Server setup failed");
-      return;
-    }
-
-    const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base (use only if relevant; keep answers short and human):\n${ctx.kbText}\n\nPhone style:\n- Sound natural and warm, like a real receptionist.\n- Short answers, ask one question at a time.\n- If the caller asks \"how are you\", respond like a human.\n- If unsure, ask a clarifying question or offer to transfer to a person.\n\nStart of call:\n- Greet the caller naturally and ask what they need.`.trim();
-
-    // Connect to OpenAI and set onReady to flip `ready` only after session.update+response.create are sent
-    openaiWs = openaiConnect({
-      instructions,
-      onReady: () => {
-        // This runs after openaiConnect sent session.update and the initial response.create
-        ready = true;
-        console.log("READY=TRUE");
-        console.log("FLUSHING BUFFER", audioBuffer.length);
-        while (audioBuffer.length && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-          const payload = audioBuffer.shift();
-          try { openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload })); } catch (e) { console.error("Failed to flush buffered audio:", e); }
-        }
-      }
-    });
-
-    // If OpenAI never opens within 3s after init, log a timeout for debugging
-    setTimeout(() => { if (!ready) console.log("OPENAI TIMEOUT (not open after 3s)"); }, 3000);
-
-    // Attach close handler to ensure Twilio websocket is closed if OpenAI closes
-    openaiWs.on("close", (code, reason) => {
-      console.log("OPENAI WS CLOSE", code, reason?.toString?.());
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
-    });
-
-    // Handle incoming OpenAI realtime messages (audio deltas) and log message types
-    openaiWs.on("message", (buf) => {
-      const msg = safeJsonParse(buf.toString());
-      if (!msg) return;
-      console.log("OPENAI MSG TYPE:", msg?.type);
-      if (msg?.type === "error") console.log("OPENAI ERROR PAYLOAD:", msg);
-
-      // Prioritize the response.output_audio.delta event
-      if (msg.type === "response.output_audio.delta" && msg.delta) {
-        const audioB64 = msg.delta;
-        if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-          const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-          try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64.length, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
-        }
-        return;
-      }
-
-      // fallback parsing for older/variant fields
-      const audioB64 = msg?.audio?.data || msg?.delta?.audio || msg?.response?.audio?.data || msg?.output_audio?.data;
-      if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-        const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
-        try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64.length, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
-      }
-    });
-  }
+  // Note: setup will be performed after we receive the Twilio 'start' event.
 
   // Log Twilio websocket events for debugging
   twilioWs.on("message", (buf) => {
@@ -342,31 +260,95 @@ wss.on("connection", async (twilioWs, req) => {
     if (!msg) return;
 
     if (msg.event === "start") {
-      // set stream and call ids from the Twilio start event
-      streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
-      callSid = msg?.start?.callSid || msg?.callSid || callSid;
-      console.log("TWILIO start streamSid=", streamSid, "callSid=", callSid);
-      console.log("TWILIO start customParameters=", msg?.start?.customParameters);
+        // set stream and call ids from the Twilio start event
+        streamSid = msg?.start?.streamSid || msg?.streamSid || streamSid;
+        callSid = msg?.start?.callSid || msg?.callSid || callSid;
+        console.log("TWILIO start streamSid=", streamSid, "callSid=", callSid);
+        console.log("TWILIO start customParameters=", msg?.start?.customParameters);
 
-      // Extract customParameters (don't overwrite existing unless present)
-      const cp = msg?.start?.customParameters || {};
-      const startCompanyId = cp.company_id || cp.companyId || companyId;
-      const startToken = cp.token || token;
-      if (cp.company_id) companyId = cp.company_id;
-      if (cp.token) token = cp.token;
+        // Extract customParameters provided by Twilio
+        const params = msg?.start?.customParameters || {};
+        const startCompanyId = params.company_id || params.companyId;
+        const startToken = params.token;
 
-      console.log("START companyId=", startCompanyId, "callSid=", callSid, "streamSid=", streamSid);
+        console.log("START companyId=", startCompanyId, "tokenPresent=", !!startToken);
 
-      // Initialize OpenAI and load context if needed (deferred init)
-      await initIfNeeded({ companyId: startCompanyId, token: startToken });
+        // Validate token at start time if server requires one
+        if (VOICE_GATEWAY_TOKEN && startToken !== VOICE_GATEWAY_TOKEN) {
+          console.log("TOKEN MISMATCH at START: provided=", !!startToken);
+          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1008, "Bad token");
+          return;
+        }
 
-      // After init attempt, error only if still missing companyId
-      if (!companyId) {
-        twilioWs.close(1008, "Missing company_id");
+        if (!startCompanyId) {
+          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1008, "Missing company_id");
+          return;
+        }
+
+        // adopt validated values
+        companyId = startCompanyId;
+        token = startToken;
+
+        // Load company context
+        let ctx;
+        try {
+          ctx = await loadCompanyContext(companyId);
+        } catch (err) {
+          console.error("Failed to load company context:", err);
+          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1011, "Server setup failed");
+          return;
+        }
+
+        const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base (use only if relevant; keep answers short and human):\n${ctx.kbText}\n\nPhone style:\n- Sound natural and warm, like a real receptionist.\n- Short answers, ask one question at a time.\n- If the caller asks \"how are you\", respond like a human.\n- If unsure, ask a clarifying question or offer to transfer to a person.\n\nStart of call:\n- Greet the caller naturally and ask what they need.`.trim();
+
+        // Connect to OpenAI and set onReady to flip `ready` only after session.update+response.create are sent
+        openaiWs = openaiConnect({
+          instructions,
+          onReady: () => {
+            ready = true;
+            console.log("READY=TRUE");
+            console.log("FLUSHING BUFFER", audioBuffer.length);
+            while (audioBuffer.length && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+              const payload = audioBuffer.shift();
+              try { openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload })); } catch (e) { console.error("Failed to flush buffered audio:", e); }
+            }
+          }
+        });
+
+        // If OpenAI never opens within 3s after init, log a timeout for debugging
+        setTimeout(() => { if (!ready) console.log("OPENAI TIMEOUT (not open after 3s)"); }, 3000);
+
+        // Ensure Twilio closes if OpenAI closes
+        openaiWs.on("close", (code, reason) => {
+          console.log("OPENAI WS CLOSE", code, reason?.toString?.());
+          if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
+        });
+
+        // Log message types and forward audio to Twilio
+        openaiWs.on("message", (buf) => {
+          const msg = safeJsonParse(buf.toString());
+          if (!msg) return;
+          console.log("OPENAI MSG TYPE:", msg?.type);
+          if (msg?.type === "error") console.log("OPENAI ERROR PAYLOAD:", msg);
+
+          if (msg.type === "response.output_audio.delta" && msg.delta) {
+            const audioB64 = msg.delta;
+            if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+              const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
+              try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64.length, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+            }
+            return;
+          }
+
+          const audioB64 = msg?.audio?.data || msg?.delta?.audio || msg?.response?.audio?.data || msg?.output_audio?.data;
+          if (audioB64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+            const twilioOut = { event: "media", streamSid, media: { payload: audioB64 } };
+            try { twilioWs.send(JSON.stringify(twilioOut)); console.log("OPENAI->TWILIO audio bytes=", audioB64.length, "streamSid=", streamSid); } catch (err) { console.error("Failed to send media to Twilio:", err); }
+          }
+
+        });
+
         return;
-      }
-
-      return;
     }
 
     if (msg.event === "media") {
