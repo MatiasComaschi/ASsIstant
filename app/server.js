@@ -109,12 +109,12 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
     if (evt.type === "session.updated") {
       logAI("SUCCESS: session.updated received. Ready for audio.");
       ws._ready = true;
-      if (!greetingSent) {
+      if (!greetingSent && !ws._activeResponse) {
         greetingSent = true;
+        ws._activeResponse = true;
         sendToOpenAI(ws, {
           type: "response.create",
           response: {
-            modalities: ["audio"],
             instructions: "Greet the caller politely and ask how you can help."
           }
         });
@@ -141,6 +141,9 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
         ws._activeResponse = true;
         sendToOpenAI(ws, { type: "response.create" });
       }
+    }
+    if (evt.type === "response.created") {
+      ws._activeResponse = true;
     }
     if (evt.type === "response.created" || evt.type === "response.done") {
       logAI("RESPONSE EVENT:", evt.type);
@@ -255,10 +258,6 @@ wss.on("connection", async (twilioWs, req) => {
     }
   });
   twilioWs.on("close", () => { try { openaiWs?.close(); } catch {} });
-});
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Voice gateway listening on :${PORT}`);
 });
 
 server.listen(PORT, "0.0.0.0", () => {
