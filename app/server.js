@@ -9,13 +9,16 @@ console.log("BUILD_STAMP=", BUILD_STAMP);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const VOICE_GATEWAY_TOKEN = process.env.VOICE_GATEWAY_TOKEN;
 const PORT = Number(process.env.PORT || 3000);
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false },
-});
+const supabase = (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
+    })
+  : null;
 
 const app = express();
 const server = http.createServer(app);
@@ -36,6 +39,14 @@ function xmlEscapeAttr(s) {
 }
 
 async function loadCompanyContext(companyId) {
+  if (!supabase) {
+    return {
+      systemPrompt: "You are a friendly receptionist.",
+      kbText: "",
+      greeting: "Hi! How can I help?",
+      disclosure: "Quick note: I'm an AI assistant.",
+    };
+  }
   const { data: profile } = await supabase
     .from("ai_profiles")
     .select("system_prompt, greeting_script, disclosure_script")
@@ -58,13 +69,108 @@ async function loadCompanyContext(companyId) {
   };
 }
 
+function formatKnowledgeBaseItems(kbItems) {
+  return (kbItems || [])
+    .map(i => {
+      const type = i?.type ?? "kb";
+      const title = i?.title ?? "";
+      const question = i?.question;
+      const answer = i?.answer ?? "";
+      return `[${type}] ${title}`.trim() + `\n` + (question ? `Q: ${question}\n` : "") + `A: ${answer}`;
+    })
+    .join("\n\n");
+}
+
+async function fetchAiContextFromSupabaseFunction(companyId) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const endpoint = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/get-ai-context?company_id=${encodeURIComponent(companyId)}`;
+  const res = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      apikey: SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Supabase get-ai-context failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+  return await res.json();
+}
+
+async function getAiContext(companyId) {
+  // Prefer Edge Function context (Railway-friendly), fallback to direct DB queries.
+  try {
+    const fnCtx = await fetchAiContextFromSupabaseFunction(companyId);
+    if (fnCtx) {
+      const kbText =
+        fnCtx.kb_text ||
+        fnCtx.knowledge_base_text ||
+        formatKnowledgeBaseItems(fnCtx.knowledge_base_items || fnCtx.kb_items);
+
+      return {
+        systemPrompt: fnCtx.system_prompt || fnCtx.instructions || "You are a friendly receptionist.",
+        kbText: kbText || "",
+        greeting: fnCtx.greeting_script || fnCtx.greeting || "Hi! How can I help?",
+        disclosure: fnCtx.disclosure_script || fnCtx.disclosure || "Quick note: I'm an AI assistant.",
+        voice: fnCtx.voice,
+        allowedActions: fnCtx.allowed_actions,
+        raw: fnCtx,
+      };
+    }
+  } catch (e) {
+    logAI("Context fetch via Supabase Function failed:", e?.message || e);
+  }
+  const dbCtx = await loadCompanyContext(companyId);
+  return { ...dbCtx, voice: undefined, allowedActions: undefined, raw: null };
+}
+
+function buildToolsFromContext(context) {
+  const tools = [];
+  const allowed = context?.allowedActions || context?.allowed_actions || context?.raw?.allowed_actions;
+  if (allowed?.booking) {
+    tools.push({
+      type: "function",
+      name: "schedule_appointment",
+      description: "Schedule an appointment for the caller",
+      parameters: {
+        type: "object",
+        properties: {
+          service: { type: "string" },
+          preferred_date: { type: "string" },
+          preferred_time: { type: "string" },
+          caller_name: { type: "string" },
+          caller_phone: { type: "string" },
+        },
+        required: ["service", "caller_name"],
+      },
+    });
+  }
+  if (allowed?.escalate) {
+    tools.push({
+      type: "function",
+      name: "transfer_to_human",
+      description: "Transfer the call to a human operator",
+      parameters: {
+        type: "object",
+        properties: {
+          reason: { type: "string" },
+        },
+        required: ["reason"],
+      },
+    });
+  }
+  return tools;
+}
+
 function sendToOpenAI(ws, obj) {
   const raw = JSON.stringify(obj);
   console.log("🧠 OPENAI | SENDING TO WS:", raw);
   ws.send(raw);
 }
 
-function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
+function openaiConnect({ sessionConfig, initialResponseInstructions, onReady, onAudioDelta, onError }) {
   const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
   const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` };
   console.log("🧠 OPENAI | CONNECTING TO:", url);
@@ -77,18 +183,40 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
   ws._activeResponse = false;
   let greetingSent = false;
   let sessionTypeMode = "with"; // "with" or "without"
+  let audioSchemaMode = "nested"; // "nested" or "flat"
+  let includeModalities = true;
+  let includeVoice = true;
+  let includeTools = true;
+  let includeTurnDetection = true;
+  let includeTranscription = true;
   let sessionUpdateAttempts = 0;
 
   function buildSessionUpdate() {
-    const audio = {
+    const base = {
+      instructions: sessionConfig?.instructions || "You are a helpful assistant.",
+    };
+    if (includeModalities) base.modalities = ["text", "audio"];
+    if (includeVoice && sessionConfig?.voice) base.voice = sessionConfig.voice;
+    if (includeTranscription && sessionConfig?.input_audio_transcription) base.input_audio_transcription = sessionConfig.input_audio_transcription;
+    if (includeTurnDetection && sessionConfig?.turn_detection) base.turn_detection = sessionConfig.turn_detection;
+    if (includeTools && Array.isArray(sessionConfig?.tools)) base.tools = sessionConfig.tools;
+
+    const audioNested = {
       audio: {
         input: { format: { type: "audio/pcmu" } },
-        output: { format: { type: "audio/pcmu" } }
-      }
+        output: { format: { type: "audio/pcmu" } },
+      },
     };
+    const audioFlat = {
+      input_audio_format: "g711_ulaw",
+      output_audio_format: "g711_ulaw",
+    };
+
+    const audio = audioSchemaMode === "nested" ? audioNested : audioFlat;
+
     const session = sessionTypeMode === "with"
-      ? { type: "realtime", instructions: instructions, ...audio }
-      : { instructions: instructions, ...audio };
+      ? { type: "realtime", ...base, ...audio }
+      : { ...base, ...audio };
     return { type: "session.update", session };
   }
 
@@ -115,7 +243,7 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
         sendToOpenAI(ws, {
           type: "response.create",
           response: {
-            instructions: "Greet the caller politely and ask how you can help."
+            instructions: initialResponseInstructions || "Greet the caller politely and ask how you can help."
           }
         });
       }
@@ -133,6 +261,27 @@ function openaiConnect({ instructions, onReady, onAudioDelta, onError }) {
       } else if (param === "session.type" && code === "missing_required_parameter" && sessionTypeMode === "without") {
         sessionTypeMode = "with";
         sendSessionUpdate("fallback: add session.type");
+      } else if ((param || "").startsWith("session.audio") && code === "unknown_parameter" && audioSchemaMode === "nested") {
+        audioSchemaMode = "flat";
+        sendSessionUpdate("fallback: switch to flat audio format params");
+      } else if ((param === "session.input_audio_format" || param === "session.output_audio_format") && code === "unknown_parameter" && audioSchemaMode === "flat") {
+        audioSchemaMode = "nested";
+        sendSessionUpdate("fallback: switch to nested audio format schema");
+      } else if (param === "session.modalities" && code === "unknown_parameter" && includeModalities) {
+        includeModalities = false;
+        sendSessionUpdate("fallback: remove modalities");
+      } else if (param === "session.voice" && code === "unknown_parameter" && includeVoice) {
+        includeVoice = false;
+        sendSessionUpdate("fallback: remove voice");
+      } else if (param === "session.tools" && code === "unknown_parameter" && includeTools) {
+        includeTools = false;
+        sendSessionUpdate("fallback: remove tools");
+      } else if (param === "session.turn_detection" && code === "unknown_parameter" && includeTurnDetection) {
+        includeTurnDetection = false;
+        sendSessionUpdate("fallback: remove turn_detection");
+      } else if (param === "session.input_audio_transcription" && code === "unknown_parameter" && includeTranscription) {
+        includeTranscription = false;
+        sendSessionUpdate("fallback: remove input_audio_transcription");
       }
       onError?.(evt);
     }
@@ -227,10 +376,23 @@ wss.on("connection", async (twilioWs, req) => {
         return;
       }
       if (!companyId) return;
-      const ctx = await loadCompanyContext(companyId);
-      const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base:\n${ctx.kbText}\n\nPhone style:\n- Natural, warm receptionist\n- Short answers; ask one question at a time\n\nStart of call:\n- Greet naturally and ask what they need.`.trim();
+      const ctx = await getAiContext(companyId);
+      const tools = buildToolsFromContext(ctx);
+      const instructions = `\n${ctx.systemPrompt}\n\nKnowledge Base:\n${ctx.kbText}\n\nPhone style:\n- Natural, warm receptionist\n- Short answers; ask one question at a time\n- If unsure, say so and ask a clarifying question\n\nStart of call:\n- Use the greeting script and ask what they need.`.trim();
       openaiWs = openaiConnect({
-        instructions,
+        sessionConfig: {
+          instructions,
+          voice: ctx.voice || "alloy",
+          input_audio_transcription: { model: "whisper-1" },
+          turn_detection: {
+            type: "server_vad",
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 800,
+          },
+          tools,
+        },
+        initialResponseInstructions: ctx.greeting || "Greet the caller politely and ask how you can help.",
         onReady: () => { ready = true; flushBuffer(); },
         onAudioDelta: delta => {
           if (!streamSid) return;
